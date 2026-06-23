@@ -8,29 +8,53 @@ import {
   addEquipmentMastery,
   applyLevelUps,
   attackPower,
+  calculateBuildSynergies,
+  currentTowerSeason,
   defensePower,
   equipmentScore,
   expToNext,
+  generateDailyRiftDungeon,
   generateDungeon,
   generateTowerDungeon,
   magicPower,
   maxHp,
   maxMp,
   rollEquipment,
+  skillMpCost,
 } from "@/lib/gameEngine";
 import type {
   BirthProfile,
   Blessing,
   Character,
+  Companion,
   CombatState,
+  DailyRiftState,
+  DailyTask,
   DungeonRoom,
   DungeonRunInfo,
+  EncounterCodexEntry,
   Equipment,
   EquipmentSlot,
   GamePhase,
   InventoryItem,
   Quest,
+  IdleRewardState,
+  AdaptiveState,
+  AchievementDetail,
+  ExpeditionState,
+  LiveOpsConfig,
+  NpcAffinity,
+  NpcMemory,
+  Rarity,
+  Relic,
+  RewardChoice,
+  RewardChoiceState,
+  Rune,
+  SeasonAlbumState,
+  SeasonPassState,
   Skill,
+  TowerRanking,
+  WeeklyBossState,
 } from "@/lib/types";
 
 type GameLog = { id: string; text: string; tone?: "normal" | "good" | "bad" | "rare" };
@@ -47,12 +71,31 @@ type GameState = {
   storage: InventoryItem[];
   storageCapacity: number;
   quests: Quest[];
+  dailyRift?: DailyRiftState;
+  encounterCodex: EncounterCodexEntry[];
+  seasonPass: SeasonPassState;
+  dailyTasks: DailyTask[];
+  weeklyBoss: WeeklyBossState;
+  idleReward: IdleRewardState;
+  rewardChoice?: RewardChoiceState;
+  towerRanking: TowerRanking;
+  npcAffinity: NpcAffinity;
+  beginnerClears: number;
+  seasonAlbum: SeasonAlbumState;
+  achievementDetails: AchievementDetail[];
+  expedition: ExpeditionState;
+  liveOps: LiveOpsConfig;
+  npcMemory: NpcMemory;
+  adaptive: AdaptiveState;
   logs: GameLog[];
   storyLoading: boolean;
   lastSavedAt?: string;
   createCharacter: (profile: BirthProfile) => void;
   enterDungeon: () => void;
   enterTower: () => void;
+  enterDailyRift: () => void;
+  enterWeeklyBoss: () => void;
+  quickExploreBeginner: () => void;
   resolveRoom: (choice: string) => void;
   combatAction: (action: "attack" | "skill" | "defend" | "dodge" | "item" | "escape", skillId?: string) => void;
   equip: (equipment: Equipment) => void;
@@ -66,8 +109,22 @@ type GameState = {
   storeItem: (item: InventoryItem) => void;
   retrieveItem: (item: InventoryItem) => void;
   buyStorageSlot: () => void;
+  claimDailyTask: (taskId: string) => void;
+  claimSeasonReward: (level: number) => void;
+  claimIdleReward: () => void;
+  claimRewardChoice: (choiceId: RewardChoice["id"]) => void;
+  reforgeEquipment: (slot: EquipmentSlot) => void;
+  claimSeasonAlbumReward: () => void;
+  summonCompanion: () => void;
+  equipRune: () => void;
+  startExpedition: () => void;
+  claimExpedition: () => void;
+  syncCloudSave: () => Promise<void>;
+  loadCloudSave: () => Promise<void>;
   reincarnate: () => void;
   manualSave: () => void;
+  exportSave: () => string;
+  importSave: (json: string) => boolean;
   generateAiStory: () => Promise<void>;
   reset: () => void;
 };
@@ -101,6 +158,22 @@ export const useGameStore = create<GameState>()(
       storage: [],
       storageCapacity: 5,
       quests: starterQuests,
+      dailyRift: createDailyRiftState(),
+      encounterCodex: createEncounterCodex([]),
+      seasonPass: createSeasonPass(),
+      dailyTasks: createDailyTasks(),
+      weeklyBoss: createWeeklyBossState(),
+      idleReward: createIdleRewardState(),
+      rewardChoice: undefined,
+      towerRanking: createTowerRanking(),
+      npcAffinity: createNpcAffinity(),
+      beginnerClears: 0,
+      seasonAlbum: createSeasonAlbum(),
+      achievementDetails: createAchievementDetails(),
+      expedition: createExpeditionState(),
+      liveOps: createLiveOpsConfig(),
+      npcMemory: createNpcMemory(),
+      adaptive: createAdaptiveState(),
       logs: [log("현실의 낡은 골동품점에서 신비한 목걸이를 발견했다.")],
       storyLoading: false,
       lastSavedAt: undefined,
@@ -133,6 +206,11 @@ export const useGameStore = create<GameState>()(
           traits: [trait],
           blessings: [],
           specialSkills: [],
+          relics: [],
+          titles: [],
+          cosmetics: [],
+          companions: [],
+          runes: [],
           skillPoints: 0,
           equipment: {},
         };
@@ -145,6 +223,22 @@ export const useGameStore = create<GameState>()(
           storage: [],
           storageCapacity: 5,
           quests: starterQuests,
+          dailyRift: createDailyRiftState(),
+          encounterCodex: createEncounterCodex([]),
+          seasonPass: createSeasonPass(),
+          dailyTasks: createDailyTasks(character),
+          weeklyBoss: createWeeklyBossState(),
+          idleReward: createIdleRewardState(),
+          rewardChoice: undefined,
+          towerRanking: createTowerRanking(),
+          npcAffinity: createNpcAffinity(),
+          beginnerClears: 0,
+          seasonAlbum: createSeasonAlbum(),
+          achievementDetails: createAchievementDetails(),
+          expedition: createExpeditionState(),
+          liveOps: createLiveOpsConfig(),
+          npcMemory: createNpcMemory(),
+          adaptive: createAdaptiveState(),
           logs: [
             log(`${profile.name}의 현실 정보가 목걸이에 흡수되었다.`, "good"),
             log(`별자리 ${fate.zodiac}, 오행 ${fate.element}, 기질 ${fate.temperament}.`),
@@ -177,17 +271,90 @@ export const useGameStore = create<GameState>()(
         if (character.level < 10) return;
         const floor = Math.min(999, Math.max(1, character.towerFloor ?? 1));
         const dungeon = generateTowerDungeon(character, floor);
-        const rewardMultiplier = 1.35 + floor * 0.08;
+        const season = currentTowerSeason();
+        const rewardMultiplier = 1.35 + floor * 0.08 + season.rewardBonus;
         set({
           phase: "dungeon",
           dungeon,
-          currentRun: { type: "tower", floor, rewardMultiplier },
+          currentRun: { type: "tower", floor, rewardMultiplier, seasonName: season.name, seasonMod: season.mod },
           roomIndex: 0,
           combat: undefined,
           logs: [
-            log(`하늘을 찌르는 무한탑의 ${floor}층 문이 열렸다. 계단 아래로는 이미 지나온 세계들이 안개처럼 흔들린다.`, "rare"),
+            log(`${season.name}: 하늘을 찌르는 무한탑의 ${floor}층 문이 열렸다.`, "rare"),
+            log(`시즌 효과 · ${season.mod}`),
             log(`탑 보상 배율 x${rewardMultiplier.toFixed(2)} · 층이 오를수록 적도 보상도 거칠어진다.`),
           ],
+        });
+      },
+
+      enterDailyRift: () => {
+        const savedCharacter = get().character;
+        if (!savedCharacter) return;
+        const character = normalizeCharacter(savedCharacter);
+        const rift = normalizeDailyRift(get().dailyRift, character);
+        if (rift.completed) {
+          set({ dailyRift: rift, logs: [...get().logs, log("오늘의 일일 균열은 이미 안정화했다. 내일 다시 열린다.", "bad")] });
+          return;
+        }
+        const dungeon = generateDailyRiftDungeon(character, rift.tier, rift.seed);
+        const rewardMultiplier = 1.65 + rift.tier * 0.28 + calculateBuildSynergies(character).length * 0.04;
+        set({
+          phase: "dungeon",
+          dungeon,
+          currentRun: { type: "rift", floor: rift.tier, rewardMultiplier, seasonName: "일일 균열", seasonMod: "하루 1회 고보상 균열" },
+          roomIndex: 0,
+          combat: undefined,
+          dailyRift: rift,
+          logs: [
+            log(`일일 균열 T${rift.tier} 개방. 오늘 한 번만 클리어 보상을 받을 수 있다.`, "rare"),
+            log(`균열 보상 배율 x${rewardMultiplier.toFixed(2)} · 활성 시너지 ${calculateBuildSynergies(character).length}개 반영.`),
+          ],
+        });
+      },
+
+      enterWeeklyBoss: () => {
+        const savedCharacter = get().character;
+        if (!savedCharacter) return;
+        const character = normalizeCharacter(savedCharacter);
+        const weeklyBoss = normalizeWeeklyBoss(get().weeklyBoss, character);
+        if (weeklyBoss.completed) {
+          set({ weeklyBoss, logs: [...get().logs, log("이번 주의 보스는 이미 토벌했다. 다음 주에 새 위협이 나타난다.", "bad")] });
+          return;
+        }
+        const boss: DungeonRoom = {
+          id: `weekly-boss-${weeklyBoss.weekKey}`,
+          kind: "보스방",
+          title: `주간 보스 · ${weeklyBoss.name}`,
+          description: `마을 상공의 균열이 붉게 열리고, ${weeklyBoss.name}의 그림자가 성벽 전체를 덮었다.`,
+          choices: ["결전 개시", "패턴 관찰", "목걸이 공명"],
+          monsters: [createWeeklyBossMonster(character, weeklyBoss)],
+        };
+        set({
+          phase: "dungeon",
+          dungeon: [boss],
+          currentRun: { type: "weekly", floor: weeklyBoss.tier, rewardMultiplier: 2.4 + weeklyBoss.tier * 0.2, seasonName: "주간 보스", seasonMod: "주 1회 고난도 토벌" },
+          roomIndex: 0,
+          combat: undefined,
+          weeklyBoss,
+          logs: [log(`주간 보스 '${weeklyBoss.name}' 출현. 이번 주 1회 보상을 받을 수 있다.`, "rare")],
+        });
+      },
+
+      quickExploreBeginner: () => {
+        const state = get();
+        const character = state.character;
+        if (!character || state.beginnerClears <= 0) {
+          set({ logs: [...state.logs, log("초심자 던전을 1회 이상 클리어해야 빠른 탐험을 사용할 수 있다.", "bad")] });
+          return;
+        }
+        const gainedExp = 80 + character.level * 25;
+        const gainedGold = 120 + character.level * 18;
+        const next = applyLevelUps(normalizeCharacter({ ...character, exp: character.exp + gainedExp, gold: character.gold + gainedGold }));
+        set({
+          character: next,
+          inventory: addMaterial(state.inventory, "ore", "균열 철광석", 2),
+          seasonPass: addSeasonXp(state.seasonPass, 20),
+          logs: [...state.logs, log(`빠른 탐험 완료: EXP ${gainedExp}, ${gainedGold}G, 균열 철광석 2개 획득.`, "good")],
         });
       },
 
@@ -247,6 +414,10 @@ export const useGameStore = create<GameState>()(
           nextCharacter = { ...nextCharacter, specialSkills: [...nextCharacter.specialSkills, encounter.skill] };
           logs.push(`기연 발생: ${encounter.text}`);
           logs.push(`특수 스킬 '${encounter.skill.name}' 습득.`);
+          set({
+            encounterCodex: markEncounterCodexDiscovered(get().encounterCodex, encounter.skill.id),
+            seasonAlbum: collectAlbumEntry(get().seasonAlbum, encounter.skill.name),
+          });
         } else if (encounter.text) {
           nextCharacter = { ...nextCharacter, gold: nextCharacter.gold + 80 + nextCharacter.level * 10 };
           logs.push(`기연 발생: ${encounter.text}`);
@@ -275,6 +446,8 @@ export const useGameStore = create<GameState>()(
         const questProgress = progressExplorationQuests(quests, room.kind);
         quests = questProgress.quests;
         logs.push(...questProgress.logs);
+        const dailyProgress = progressDailyTasks(state.dailyTasks, "explore", 1);
+        logs.push(...dailyProgress.logs);
 
         const nextIndex = state.roomIndex + 1;
         if (nextIndex >= state.dungeon.length) {
@@ -283,6 +456,8 @@ export const useGameStore = create<GameState>()(
             character: nextCharacter,
             inventory,
             quests,
+            dailyTasks: dailyProgress.tasks,
+            seasonPass: addSeasonXp(state.seasonPass, 8),
             logs: [...state.logs, ...logs.map((text) => log(text, text.includes("획득") || text.includes("완료") ? "good" : "normal")), log("던전의 균열이 안정되었다. 마을로 돌아갈 수 있다.", "good")],
           });
           return;
@@ -292,6 +467,8 @@ export const useGameStore = create<GameState>()(
           character: nextCharacter,
           inventory,
           quests,
+          dailyTasks: dailyProgress.tasks,
+          seasonPass: addSeasonXp(state.seasonPass, 8),
           roomIndex: nextIndex,
           logs: [...state.logs, ...logs.map((text) => log(text, text.includes("획득") || text.includes("완료") ? "good" : "normal"))],
         });
@@ -353,13 +530,14 @@ export const useGameStore = create<GameState>()(
         if (action === "skill") {
           const usableSkills = getUsableSkills(character);
           const skill = usableSkills.find((item) => item.id === skillId) ?? usableSkills[0];
-          if (nextCharacter.mp >= skill.mpCost) {
-            nextCharacter.mp -= skill.mpCost;
+          const cost = skillMpCost(character, skill.mpCost);
+          if (nextCharacter.mp >= cost) {
+            nextCharacter.mp -= cost;
             const base = character.job.archetype === "magic" ? magicPower(character) : attackPower(character);
             const crit = rollCritical(character, random, 0.6);
             const damage = Math.max(5, Math.round(base * skill.power * (crit ? 1.7 : 1) - monster.defense * 0.55));
             monster.hp -= damage;
-            logs.push(`${skill.name}: ${crit ? "크리티컬로 " : ""}${skill.text} ${damage} 피해.`);
+            logs.push(`${skill.name}(${cost}MP): ${crit ? "크리티컬로 " : ""}${skill.text} ${damage} 피해.`);
           } else {
             logs.push("MP가 부족하다.");
             playerTurnSpent = false;
@@ -370,19 +548,25 @@ export const useGameStore = create<GameState>()(
           const remainingMonsters = combatMonsters.slice(1);
           const finalMonsterInRoom = remainingMonsters.length === 0;
           const bossRoom = finalMonsterInRoom && state.roomIndex >= state.dungeon.length - 1;
-          const defeatedBoss = monster.id.startsWith("boss") || monster.id.startsWith("mini");
+          const defeatedBoss = monster.id.startsWith("boss") || monster.id.startsWith("mini") || monster.id.startsWith("weekly");
           const reward = finishCombat(nextCharacter, monster, inventory, state.quests, defeatedBoss, state.currentRun?.rewardMultiplier ?? 1);
+          const combo = Math.min(30, (state.currentRun?.comboStreak ?? 0) + 1);
+          const dailyKillProgress = progressDailyTasks(state.dailyTasks, "kill", 1);
+          const seasonPass = addSeasonXp(state.seasonPass, reward.seasonXp + Math.floor(combo / 3));
           if (!finalMonsterInRoom) {
             const nextMonster = remainingMonsters[0];
             set({
               character: reward.character,
               inventory: reward.inventory,
               quests: reward.quests,
+              dailyTasks: dailyKillProgress.tasks,
+              seasonPass,
+              currentRun: state.currentRun ? { ...state.currentRun, comboStreak: combo } : state.currentRun,
               combat: {
                 monster: nextMonster,
                 monsters: remainingMonsters,
                 defending: false,
-                log: [...logs, ...reward.logs.map((entry) => entry.text), `${nextMonster.name}이(가) 다음 상대로 뛰쳐나왔다.`].slice(-8),
+                log: [...logs, ...reward.logs.map((entry) => entry.text), ...dailyKillProgress.logs, `연속 처치 ${combo} · 시즌 XP +${reward.seasonXp + Math.floor(combo / 3)}`, `${nextMonster.name}이(가) 다음 상대로 뛰쳐나왔다.`].slice(-8),
               },
             });
             return;
@@ -391,23 +575,59 @@ export const useGameStore = create<GameState>()(
           dungeon[state.roomIndex] = { ...dungeon[state.roomIndex], cleared: true };
           const nextIndex = state.roomIndex + 1;
           const towerRun = state.currentRun?.type === "tower" ? state.currentRun : undefined;
+          const riftRun = state.currentRun?.type === "rift" ? state.currentRun : undefined;
+          const weeklyRun = state.currentRun?.type === "weekly" ? state.currentRun : undefined;
           const clearedTower = bossRoom && !!towerRun;
+          const clearedRift = bossRoom && !!riftRun;
+          const clearedWeekly = bossRoom && !!weeklyRun;
           const rewardedCharacter = clearedTower
             ? { ...reward.character, towerFloor: Math.min(999, Math.max(reward.character.towerFloor ?? 1, towerRun.floor + 1)) }
             : reward.character;
+          const milestone = clearedTower && towerRun.floor % 10 === 0 ? grantTowerMilestone(rewardedCharacter, towerRun.floor) : { character: rewardedCharacter, logs: [] as GameLog[] };
+          const riftProgress = clearedRift ? progressDailyTasks(dailyKillProgress.tasks, "rift", 1) : dailyKillProgress;
+          const relicReward = defeatedBoss ? rollRelicReward(milestone.character, state.currentRun?.type ?? "beginner") : undefined;
+          const seasonAwards = clearedTower ? grantTowerSeasonAwards(milestone.character, towerRun.floor) : milestone.character;
+          const companionResult = growCompanions(seasonAwards, monster.level * 8 + (defeatedBoss ? 40 : 0));
+          const characterWithRelic = relicReward ? addRelic(companionResult.character, relicReward) : companionResult.character;
+          const riftGrade = clearedRift ? calculateRiftGrade(characterWithRelic, riftRun.floor) : undefined;
+          const turns = (state.currentRun?.turns ?? 0) + combo;
+          const ranking = clearedTower ? updateTowerRanking(state.towerRanking, towerRun.floor, turns, (state.currentRun?.deaths ?? 0) === 0) : state.towerRanking;
+          const albumWithBoss = defeatedBoss ? collectAlbumEntry(state.seasonAlbum, monster.name) : state.seasonAlbum;
+          const albumWithRelic = relicReward ? collectAlbumEntry(albumWithBoss, relicReward.name) : albumWithBoss;
           set({
             phase: nextIndex >= dungeon.length ? "reward" : "dungeon",
-            character: rewardedCharacter,
+            character: characterWithRelic,
             inventory: reward.inventory,
             quests: reward.quests,
+            dailyTasks: riftProgress.tasks,
+            seasonPass: addSeasonXp(seasonPass, clearedRift ? 55 : clearedTower ? 35 : 0),
+            dailyRift: clearedRift ? { ...normalizeDailyRift(state.dailyRift, characterWithRelic), completed: true } : state.dailyRift,
+            weeklyBoss: clearedWeekly ? { ...normalizeWeeklyBoss(state.weeklyBoss, characterWithRelic), completed: true } : state.weeklyBoss,
+            rewardChoice: defeatedBoss ? createRewardChoice(state.currentRun?.type ?? "beginner") : state.rewardChoice,
+            beginnerClears: state.currentRun?.type === "beginner" && bossRoom ? state.beginnerClears + 1 : state.beginnerClears,
+            towerRanking: ranking,
+            seasonAlbum: albumWithRelic,
+            achievementDetails: updateAchievementDetails(state.achievementDetails, characterWithRelic, ranking),
+            npcMemory: rememberNpc(state.npcMemory, "guild", `${monster.name} 토벌 기록을 접수했다.`),
+            adaptive: updateAdaptiveOnWin(state.adaptive),
             dungeon,
             roomIndex: Math.min(nextIndex, dungeon.length - 1),
             combat: undefined,
+            currentRun: state.currentRun ? { ...state.currentRun, comboStreak: 0 } : state.currentRun,
             logs: [
               ...state.logs,
               ...logs.map((text) => log(text)),
               ...reward.logs,
+              ...dailyKillProgress.logs.map((text) => log(text, "rare")),
+              ...riftProgress.logs.filter((text) => !dailyKillProgress.logs.includes(text)).map((text) => log(text, "rare")),
+              log(`연속 처치 ${combo} · 시즌 XP +${reward.seasonXp + Math.floor(combo / 3)}`, "good"),
               ...(clearedTower ? [log(`무한탑 ${towerRun.floor}층 돌파. 다음 층이 열렸다.`, "rare")] : []),
+              ...milestone.logs,
+              ...(clearedRift ? [log(`일일 균열 T${riftRun.floor} 안정화 · 등급 ${riftGrade}. 내일 새로운 균열이 열린다.`, "rare")] : []),
+              ...(clearedWeekly ? [log(`주간 보스 '${state.weeklyBoss.name}' 토벌. 선택형 보상이 열렸다.`, "rare")] : []),
+              ...(relicReward ? [log(`유물 획득: ${relicReward.rarity} '${relicReward.name}'`, "rare")] : []),
+              ...companionResult.logs,
+              ...(clearedTower ? [log(`시즌 랭킹 갱신: 최고층 ${ranking.highestFloor}, 최단 턴 ${ranking.bestTurns || turns}, 노데스 ${ranking.noDeathFloor}층`, "rare")] : []),
             ],
           });
           return;
@@ -433,11 +653,11 @@ export const useGameStore = create<GameState>()(
         if (nextCharacter.hp <= 0) {
           nextCharacter.hp = 1;
           nextCharacter.gold = Math.max(0, nextCharacter.gold - Math.round(nextCharacter.gold * 0.12));
-          set({ phase: "defeat", character: nextCharacter, combat: undefined, inventory, logs: [...state.logs, ...logs.map((text) => log(text)), log("목걸이가 강제로 현실 귀환을 발동했다. 골드 일부를 잃었다.", "bad")] });
+          set({ phase: "defeat", character: nextCharacter, adaptive: updateAdaptiveOnLoss(state.adaptive), combat: undefined, currentRun: state.currentRun ? { ...state.currentRun, deaths: (state.currentRun.deaths ?? 0) + 1 } : state.currentRun, inventory, logs: [...state.logs, ...logs.map((text) => log(text)), log("목걸이가 강제로 현실 귀환을 발동했다. 골드 일부를 잃었다.", "bad")] });
           return;
         }
 
-        set({ character: nextCharacter, combat: { monster, monsters: [monster, ...combatMonsters.slice(1)], defending: action === "defend", log: logs.slice(-8) }, inventory });
+        set({ character: nextCharacter, currentRun: state.currentRun ? { ...state.currentRun, turns: (state.currentRun.turns ?? 0) + 1 } : state.currentRun, combat: { monster, monsters: [monster, ...combatMonsters.slice(1)], defending: action === "defend", log: logs.slice(-8) }, inventory });
       },
 
       equip: (equipment) => {
@@ -468,6 +688,7 @@ export const useGameStore = create<GameState>()(
         set({
           character: { ...character, gold: character.gold - potion.price },
           inventory: addConsumable(get().inventory, potion.id, 1),
+          npcAffinity: addNpcAffinity(get().npcAffinity, "merchant", 1),
           logs: [...get().logs, log(`${potion.name} 구매. -${potion.price}골드`)],
         });
       },
@@ -484,6 +705,7 @@ export const useGameStore = create<GameState>()(
         const blessings = [...(character.blessings ?? []).filter((item) => item.runsLeft > 0), blessing].slice(-3);
         set({
           character: { ...normalizeCharacter(character), gold: character.gold - cost, blessings },
+          npcAffinity: addNpcAffinity(get().npcAffinity, "church", 2),
           logs: [...get().logs, log(`교회 축복: ${blessing.name}. ${blessing.text}`, "rare")],
         });
       },
@@ -498,6 +720,7 @@ export const useGameStore = create<GameState>()(
         }
         set({
           character: { ...normalizeCharacter(character), gold: character.gold - cost, hp: character.maxHp, mp: character.maxMp },
+          npcAffinity: addNpcAffinity(get().npcAffinity, "inn", 2),
           logs: [...get().logs, log(`여관에서 숙박했다. HP와 MP가 완전히 회복되었다. -${cost}골드`, "good")],
         });
       },
@@ -528,7 +751,7 @@ export const useGameStore = create<GameState>()(
         }
 
         if (logs.length === 0) logs.push(log("길드 접수원이 진행 중인 의뢰를 확인해 주었다."));
-        set({ character: nextCharacter, inventory, quests, logs: [...state.logs, ...logs] });
+        set({ character: nextCharacter, inventory, quests, npcAffinity: addNpcAffinity(state.npcAffinity, "guild", 2), logs: [...state.logs, ...logs] });
       },
 
       enhanceEquipment: (slot) => {
@@ -543,6 +766,7 @@ export const useGameStore = create<GameState>()(
         const nextEquipment = success ? improveEnhancedEquipment(equipment) : equipment;
         set({
           character: normalizeCharacter({ ...character, gold: character.gold - cost, equipment: { ...character.equipment, [slot]: nextEquipment } }),
+          npcAffinity: addNpcAffinity(get().npcAffinity, "blacksmith", 2),
           logs: [...get().logs, log(success ? `강화 성공! ${nextEquipment.name} +${nextEquipment.enhance}` : "강화 실패. 장비는 파괴되지 않았다.", success ? "good" : "bad")],
         });
       },
@@ -608,6 +832,202 @@ export const useGameStore = create<GameState>()(
         });
       },
 
+      claimDailyTask: (taskId) => {
+        const state = get();
+        const character = state.character;
+        if (!character) return;
+        const tasks = normalizeDailyTasks(state.dailyTasks, character);
+        const task = tasks.find((item) => item.id === taskId);
+        if (!task || !task.completed || task.claimed) return;
+        set({
+          character: { ...character, gold: character.gold + task.rewardGold },
+          seasonPass: addSeasonXp(state.seasonPass, task.rewardSeasonXp),
+          dailyTasks: tasks.map((item) => item.id === taskId ? { ...item, claimed: true } : item),
+          logs: [...state.logs, log(`일일 임무 보상 수령: ${task.title} · ${task.rewardGold}G · 시즌 XP +${task.rewardSeasonXp}`, "rare")],
+        });
+      },
+
+      claimSeasonReward: (level) => {
+        const state = get();
+        const character = state.character;
+        if (!character) return;
+        const pass = normalizeSeasonPass(state.seasonPass);
+        if (level > seasonPassLevel(pass) || pass.claimedLevels.includes(level)) return;
+        const gold = 120 + level * 35;
+        set({
+          character: { ...character, gold: character.gold + gold },
+          seasonPass: { ...pass, claimedLevels: [...pass.claimedLevels, level] },
+          logs: [...state.logs, log(`시즌 패스 Lv.${level} 보상 수령: ${gold}G`, "rare")],
+        });
+      },
+
+      claimIdleReward: () => {
+        const state = get();
+        const character = state.character;
+        if (!character) return;
+        const idle = calculateIdleReward(state.idleReward, character);
+        if (idle.pendingGold <= 0 && idle.pendingMaterials <= 0 && idle.pendingTowerKeys <= 0) {
+          set({ idleReward: { ...idle, lastSeenAt: new Date().toISOString() }, logs: [...state.logs, log("목걸이가 아직 충분한 마력을 모으지 못했다.")] });
+          return;
+        }
+        set({
+          character: { ...character, gold: character.gold + idle.pendingGold },
+          inventory: addMaterial(state.inventory, "ore", "균열 철광석", idle.pendingMaterials),
+          idleReward: createIdleRewardState(),
+          logs: [...state.logs, log(`방치 보상 수령: ${idle.cappedHours.toFixed(1)}시간 · ${idle.pendingGold}G · 철광석 ${idle.pendingMaterials}개 · 탑 열쇠 ${idle.pendingTowerKeys}개`, "rare")],
+        });
+      },
+
+      claimRewardChoice: (choiceId) => {
+        const state = get();
+        const character = state.character;
+        if (!character || !state.rewardChoice) return;
+        let nextCharacter = normalizeCharacter(character);
+        let inventory = [...state.inventory];
+        const logs: GameLog[] = [];
+        if (choiceId === "equipment-box") {
+          const equipment = rollEquipment(character.level + 2, character.stats.LUK, character.fate.seed + Date.now(), "희귀");
+          const auto = autoEquip(nextCharacter, inventory, equipment);
+          nextCharacter = auto.character;
+          inventory = auto.inventory;
+          logs.push(log(`선택 보상: 희귀 장비 상자에서 '${equipment.name}' 획득.`, "rare"));
+        } else if (choiceId === "skill-fragment") {
+          nextCharacter = { ...nextCharacter, skillPoints: nextCharacter.skillPoints + 2 };
+          logs.push(log("선택 보상: 스킬 조각 2개 획득.", "rare"));
+        } else {
+          inventory = addMaterial(inventory, "reforge-stone", "재련석", 3, "고급");
+          logs.push(log("선택 보상: 재련석 3개 획득.", "rare"));
+        }
+        set({ character: nextCharacter, inventory, rewardChoice: undefined, logs: [...state.logs, ...logs] });
+      },
+
+      reforgeEquipment: (slot) => {
+        const state = get();
+        const character = state.character;
+        const equipment = character?.equipment[slot];
+        if (!character || !equipment) return;
+        const stone = state.inventory.find((item) => item.type === "material" && item.id === "reforge-stone");
+        if (!stone || stone.type !== "material" || stone.qty < 1) {
+          set({ logs: [...state.logs, log("재련석이 부족하다. 보스 선택 보상이나 주간 보스에서 획득할 수 있다.", "bad")] });
+          return;
+        }
+        const nextEquipment = reforgeOptions(equipment, character);
+        set({
+          character: normalizeCharacter({ ...character, equipment: { ...character.equipment, [slot]: nextEquipment } }),
+          inventory: consumeMaterial(state.inventory, "reforge-stone", 1),
+          npcAffinity: addNpcAffinity(state.npcAffinity, "blacksmith", 3),
+          logs: [...state.logs, log(`옵션 재련 완료: ${nextEquipment.name} · ${nextEquipment.options.join(" / ")}`, "rare")],
+        });
+      },
+
+      claimSeasonAlbumReward: () => {
+        const state = get();
+        const character = state.character;
+        if (!character) return;
+        const album = normalizeSeasonAlbum(state.seasonAlbum);
+        if (album.claimed || !album.entries.every((entry) => entry.collected)) {
+          set({ logs: [...state.logs, log("시즌 앨범을 모두 채워야 완성 보상을 받을 수 있다.", "bad")] });
+          return;
+        }
+        const gold = state.liveOps.albumBonusGold;
+        const title = `${album.seasonKey} 앨범 완성자`;
+        set({
+          character: { ...character, gold: character.gold + gold, titles: [...new Set([...(character.titles ?? []), title])] },
+          seasonAlbum: { ...album, claimed: true },
+          logs: [...state.logs, log(`시즌 앨범 완성 보상: ${gold}G, 칭호 '${title}' 획득.`, "rare")],
+        });
+      },
+
+      summonCompanion: () => {
+        const state = get();
+        const character = state.character;
+        if (!character) return;
+        const cost = 350 + (character.companions?.length ?? 0) * 250;
+        if (character.gold < cost) {
+          set({ logs: [...state.logs, log(`동료 소환에는 ${cost}G가 필요하다.`, "bad")] });
+          return;
+        }
+        const companion = rollCompanion(character);
+        set({
+          character: { ...character, gold: character.gold - cost, companions: [companion, ...(character.companions ?? [])].slice(0, 5) },
+          logs: [...state.logs, log(`목걸이 기억 소환: ${companion.kind} '${companion.name}' 합류.`, "rare")],
+        });
+      },
+
+      equipRune: () => {
+        const state = get();
+        const character = state.character;
+        if (!character) return;
+        const cost = 2;
+        const ore = state.inventory.find((item) => item.type === "material" && item.id === "ore");
+        if (!ore || ore.type !== "material" || ore.qty < cost) {
+          set({ logs: [...state.logs, log("룬 각인에는 균열 철광석 2개가 필요하다.", "bad")] });
+          return;
+        }
+        const rune = rollRune(character);
+        set({
+          character: { ...character, runes: [rune, ...(character.runes ?? [])].slice(0, 5) },
+          inventory: consumeMaterial(state.inventory, "ore", cost),
+          logs: [...state.logs, log(`문장 각인: '${rune.name}' 장착. ${rune.text}`, "rare")],
+        });
+      },
+
+      startExpedition: () => {
+        const state = get();
+        const item = state.inventory.find((entry) => entry.type === "equipment") ?? state.inventory.find((entry) => entry.type === "material");
+        if (!item || state.expedition.startedAt) {
+          set({ logs: [...state.logs, log(item ? "이미 원정대가 파견 중이다." : "원정에 맡길 장비나 재료가 없다.", "bad")] });
+          return;
+        }
+        const now = new Date();
+        const endsAt = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+        set({
+          inventory: removeInventoryItem(state.inventory, item),
+          expedition: { startedAt: now.toISOString(), endsAt: endsAt.toISOString(), assignedItemName: getItemName(item), claimed: false },
+          logs: [...state.logs, log(`${getItemName(item)}을(를) 원정대에 맡겼다. 2시간 후 보상을 받을 수 있다.`, "good")],
+        });
+      },
+
+      claimExpedition: () => {
+        const state = get();
+        const character = state.character;
+        if (!character || !state.expedition.startedAt || !state.expedition.endsAt) return;
+        if (Date.now() < new Date(state.expedition.endsAt).getTime()) {
+          set({ logs: [...state.logs, log("원정대가 아직 돌아오지 않았다.", "bad")] });
+          return;
+        }
+        const gold = 220 + character.level * 12;
+        set({
+          character: { ...character, gold: character.gold + gold },
+          inventory: addMaterial(state.inventory, "reforge-stone", "재련석", 2, "고급"),
+          expedition: createExpeditionState(),
+          logs: [...state.logs, log(`원정 완료: ${gold}G, 재련석 2개 획득.`, "rare")],
+        });
+      },
+
+      syncCloudSave: async () => {
+        const state = get();
+        const savedAt = new Date().toISOString();
+        const response = await fetch("/api/game/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payload: portableSaveState(normalizeGameState({ ...state, lastSavedAt: savedAt })) }),
+        });
+        const result = await response.json().catch(() => ({}));
+        set({ lastSavedAt: savedAt, logs: [...state.logs, log(response.ok ? `클라우드 저장 완료. ${result.mode === "database" ? "DB" : "데모"} 모드.` : "클라우드 저장 실패.", response.ok ? "good" : "bad")] });
+      },
+
+      loadCloudSave: async () => {
+        const state = get();
+        const response = await fetch("/api/game/save");
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.payload) {
+          set({ logs: [...state.logs, log("불러올 클라우드 저장이 없다.", "bad")] });
+          return;
+        }
+        get().importSave(JSON.stringify({ state: result.payload }));
+      },
+
       reincarnate: () => {
         const character = get().character;
         if (!character || character.level < 100) return;
@@ -625,12 +1045,13 @@ export const useGameStore = create<GameState>()(
           stats,
           traits: [...character.traits, trait],
           blessings: [],
+          relics: character.relics ?? [],
           hp: maxHp(stats, 1),
           maxHp: maxHp(stats, 1),
           mp: maxMp(stats, 1),
           maxMp: maxMp(stats, 1),
         };
-        set({ phase: "town", character: next, logs: [...get().logs, log(`환생 완료. 새로운 직업 '${job.name}'과 특성 '${trait.name}'이 운명에 새겨졌다.`, "rare")] });
+        set({ phase: "town", character: next, dailyRift: normalizeDailyRift(get().dailyRift, next), logs: [...get().logs, log(`환생 완료. 새로운 직업 '${job.name}'과 특성 '${trait.name}'이 운명에 새겨졌다.`, "rare")] });
       },
 
       generateAiStory: async () => {
@@ -660,11 +1081,50 @@ export const useGameStore = create<GameState>()(
         });
       },
 
+      exportSave: () => {
+        const savedAt = new Date().toISOString();
+        const state = normalizeGameState({ ...get(), lastSavedAt: savedAt });
+        set({ lastSavedAt: savedAt, logs: [...get().logs, log(`JSON 세이브 파일 생성. ${formatSaveTime(savedAt)}`, "good")] });
+        return JSON.stringify({
+          game: "Another World Dungeon Explorer",
+          version: 1,
+          exportedAt: savedAt,
+          state: portableSaveState(state),
+        }, null, 2);
+      },
+
+      importSave: (json) => {
+        try {
+          const parsed = JSON.parse(json) as unknown;
+          const importedState = (isPortableSaveEnvelope(parsed) ? parsed.state : parsed) as Partial<GameState>;
+          const next = normalizeGameState({
+            ...get(),
+            ...importedState,
+            storyLoading: false,
+            combat: undefined,
+            logs: [
+              ...((importedState.logs as GameLog[] | undefined) ?? []),
+              log("JSON 세이브 파일을 불러왔다.", "rare"),
+            ],
+            lastSavedAt: new Date().toISOString(),
+          });
+          set(next);
+          return true;
+        } catch {
+          set({ logs: [...get().logs, log("JSON 세이브 파일을 읽지 못했다.", "bad")] });
+          return false;
+        }
+      },
+
       reset: () => {
-        set({ phase: "create", character: undefined, dungeon: [], currentRun: undefined, roomIndex: 0, combat: undefined, inventory: starterInventory, storage: [], storageCapacity: 5, quests: starterQuests, logs: [log("새로운 목걸이가 주인을 기다린다.")], lastSavedAt: undefined });
+        set({ phase: "create", character: undefined, dungeon: [], currentRun: undefined, roomIndex: 0, combat: undefined, inventory: starterInventory, storage: [], storageCapacity: 5, quests: starterQuests, dailyRift: createDailyRiftState(), encounterCodex: createEncounterCodex([]), seasonPass: createSeasonPass(), dailyTasks: createDailyTasks(), weeklyBoss: createWeeklyBossState(), idleReward: createIdleRewardState(), rewardChoice: undefined, towerRanking: createTowerRanking(), npcAffinity: createNpcAffinity(), beginnerClears: 0, seasonAlbum: createSeasonAlbum(), achievementDetails: createAchievementDetails(), expedition: createExpeditionState(), liveOps: createLiveOpsConfig(), npcMemory: createNpcMemory(), adaptive: createAdaptiveState(), logs: [log("새로운 목걸이가 주인을 기다린다.")], lastSavedAt: undefined });
       },
     }),
-    { name: "another-world-dungeon-save", partialize: (state) => ({ ...state, storyLoading: false, combat: undefined }) },
+    {
+      name: "another-world-dungeon-save",
+      partialize: (state) => ({ ...state, storyLoading: false, combat: undefined }),
+      merge: (persisted, current) => normalizeGameState({ ...current, ...(persisted as Partial<GameState>) }),
+    },
   ),
 );
 
@@ -675,6 +1135,150 @@ function formatSaveTime(savedAt: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function todayKey() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function createDailyRiftState(character?: Character): DailyRiftState {
+  const date = todayKey();
+  const seedBase = date.replace(/-/g, "");
+  const tier = character ? Math.max(1, Math.min(12, Math.floor(character.level / 10) + 1 + character.reincarnation)) : 1;
+  return {
+    date,
+    completed: false,
+    tier,
+    seed: Number(seedBase) + (character?.fate.seed ?? 0),
+  };
+}
+
+function normalizeDailyRift(rift: DailyRiftState | undefined, character: Character) {
+  if (!rift || rift.date !== todayKey()) return createDailyRiftState(character);
+  return {
+    ...rift,
+    tier: Math.max(rift.tier, Math.max(1, Math.min(12, Math.floor(character.level / 10) + 1 + character.reincarnation))),
+  };
+}
+
+function createEncounterCodex(discoveredIds: string[]): EncounterCodexEntry[] {
+  const discovered = new Set(discoveredIds);
+  return specialEncounterSkills.map((skill) => ({
+    id: skill.id,
+    name: skill.name,
+    text: skill.text,
+    discovered: discovered.has(skill.id),
+  }));
+}
+
+function normalizeEncounterCodex(codex: EncounterCodexEntry[] | undefined) {
+  const discoveredIds = (codex ?? []).filter((entry) => entry.discovered).map((entry) => entry.id);
+  return createEncounterCodex(discoveredIds);
+}
+
+function markEncounterCodexDiscovered(codex: EncounterCodexEntry[] | undefined, skillId: string) {
+  return normalizeEncounterCodex(codex).map((entry) => entry.id === skillId ? { ...entry, discovered: true } : entry);
+}
+
+function seasonKey() {
+  return currentTowerSeason().key;
+}
+
+function createSeasonPass(): SeasonPassState {
+  const season = currentTowerSeason();
+  return {
+    seasonKey: season.key,
+    name: season.name,
+    startsAt: season.startsAt,
+    endsAt: season.endsAt,
+    xp: 0,
+    claimedLevels: [],
+  };
+}
+
+function normalizeSeasonPass(pass: SeasonPassState | undefined) {
+  if (!pass || pass.seasonKey !== seasonKey()) return createSeasonPass();
+  const season = currentTowerSeason();
+  return { ...pass, name: season.name, startsAt: pass.startsAt ?? season.startsAt, endsAt: pass.endsAt ?? season.endsAt, claimedLevels: pass.claimedLevels ?? [] };
+}
+
+function seasonPassLevel(pass: SeasonPassState) {
+  return Math.max(1, Math.min(50, Math.floor(pass.xp / 100) + 1));
+}
+
+function addSeasonXp(pass: SeasonPassState | undefined, xp: number) {
+  const normalized = normalizeSeasonPass(pass);
+  return { ...normalized, xp: normalized.xp + Math.max(0, xp) };
+}
+
+function createDailyTasks(character?: Character): DailyTask[] {
+  const date = todayKey();
+  const level = character?.level ?? 1;
+  return [
+    { id: `daily-kill-${date}`, date, title: "오늘의 토벌", goal: "몬스터 5마리 처치", progress: 0, target: 5, rewardGold: 160 + level * 12, rewardSeasonXp: 40, completed: false, claimed: false },
+    { id: `daily-explore-${date}`, date, title: "균열 탐색", goal: "방 7개 탐험", progress: 0, target: 7, rewardGold: 120 + level * 10, rewardSeasonXp: 35, completed: false, claimed: false },
+    { id: `daily-rift-${date}`, date, title: "하루 한 번 균열", goal: "일일 균열 1회 안정화", progress: 0, target: 1, rewardGold: 300 + level * 18, rewardSeasonXp: 75, completed: false, claimed: false },
+  ];
+}
+
+function normalizeDailyTasks(tasks: DailyTask[] | undefined, character?: Character) {
+  if (!tasks?.length || tasks[0]?.date !== todayKey()) return createDailyTasks(character);
+  return tasks;
+}
+
+function progressDailyTasks(tasks: DailyTask[] | undefined, type: "kill" | "explore" | "rift", amount: number) {
+  const logs: string[] = [];
+  const marker = type === "kill" ? "daily-kill" : type === "explore" ? "daily-explore" : "daily-rift";
+  const next = normalizeDailyTasks(tasks).map((task) => {
+    if (!task.id.startsWith(marker) || task.claimed || task.completed) return task;
+    const progress = Math.min(task.target, task.progress + amount);
+    const completed = progress >= task.target;
+    if (completed) logs.push(`일일 임무 완료: ${task.title}`);
+    return { ...task, progress, completed };
+  });
+  return { tasks: next, logs };
+}
+
+function rollRelicReward(character: Character, runType: DungeonRunInfo["type"]): Relic | undefined {
+  const random = seeded(character.fate.seed + character.level * 761 + Date.now());
+  const chance = runType === "rift" ? 0.72 : runType === "tower" ? 0.38 : 0.18;
+  if (random() > chance) return undefined;
+  const table: Relic[] = [
+    { id: "relic-star-core", name: "별핵 파편", rarity: "희귀", text: "기연과 공명하는 작은 별의 핵.", effects: { critRate: 0.03, expRate: 0.05 } },
+    { id: "relic-dragon-scale", name: "용혈 비늘", rarity: "영웅", text: "무한탑 깊은 곳에서 떨어진 뜨거운 비늘.", effects: { attackRate: 0.07, defenseRate: 0.05 } },
+    { id: "relic-moon-ledger", name: "달빛 장부", rarity: "영웅", text: "보상을 놓치지 않는 상인의 유물.", effects: { goldRate: 0.12, dropRate: 0.07 } },
+    { id: "relic-time-splinter", name: "시간의 가시", rarity: "전설", text: "한 턴 앞선 감각을 남기는 시간 파편.", effects: { critRate: 0.07, magicRate: 0.08 } },
+    { id: "relic-worldseed", name: "세계수 씨앗", rarity: "신화", text: "환생 후에도 빛을 잃지 않는 세계수의 씨앗.", effects: { expRate: 0.12, defenseRate: 0.1, dropRate: 0.08 } },
+  ];
+  return table[Math.floor(random() * table.length)];
+}
+
+function addRelic(character: Character, relic: Relic) {
+  const relics = character.relics ?? [];
+  if (relics.some((item) => item.id === relic.id)) {
+    return { ...character, gold: character.gold + 250 + character.level * 12 };
+  }
+  return { ...character, relics: [relic, ...relics].slice(0, 12) };
+}
+
+function grantTowerMilestone(character: Character, floor: number) {
+  const gold = 500 + floor * 45;
+  return {
+    character: { ...character, gold: character.gold + gold },
+    logs: [log(`무한탑 ${floor}층 이정표 보상: ${gold}G`, "rare")],
+  };
+}
+
+function calculateRiftGrade(character: Character, tier: number) {
+  const hpRate = character.hp / Math.max(1, character.maxHp);
+  if (hpRate > 0.75 && tier >= 5) return "SS";
+  if (hpRate > 0.55) return "S";
+  if (hpRate > 0.28) return "A";
+  return "B";
 }
 
 function addConsumable(items: InventoryItem[], id: "potion" | PotionId | "mana-potion", qty: number) {
@@ -732,17 +1336,282 @@ function storageSlotCost(currentCapacity: number) {
   return 750 + Math.max(0, currentCapacity - 5) * 450 + Math.max(0, currentCapacity - 10) * 250;
 }
 
-function addMaterial(items: InventoryItem[], id: string, name: string, qty: number) {
+function addMaterial(items: InventoryItem[], id: string, name: string, qty: number, rarity: Rarity = "일반") {
   const next = items.map((item) => ({ ...item })) as InventoryItem[];
   const found = next.find((item) => item.type === "material" && item.id === id);
   if (found?.type === "material") found.qty += qty;
-  else next.push({ id, type: "material", name, qty, rarity: "일반" });
+  else next.push({ id, type: "material", name, qty, rarity });
   return next;
 }
 
+function consumeMaterial(items: InventoryItem[], id: string, qty: number) {
+  return items
+    .map((item) => item.type === "material" && item.id === id ? { ...item, qty: item.qty - qty } : item)
+    .filter((item) => item.type !== "material" || item.qty > 0);
+}
+
+function createTowerRanking(): TowerRanking {
+  return { highestFloor: 0, bestTurns: 0, noDeathFloor: 0 };
+}
+
+function updateTowerRanking(ranking: TowerRanking | undefined, floor: number, turns: number, noDeath: boolean) {
+  const current = ranking ?? createTowerRanking();
+  return {
+    highestFloor: Math.max(current.highestFloor, floor),
+    bestTurns: current.bestTurns === 0 ? turns : Math.min(current.bestTurns, turns),
+    noDeathFloor: noDeath ? Math.max(current.noDeathFloor, floor) : current.noDeathFloor,
+  };
+}
+
+function createNpcAffinity(): NpcAffinity {
+  return { church: 0, inn: 0, guild: 0, blacksmith: 0, merchant: 0 };
+}
+
+function addNpcAffinity(affinity: NpcAffinity | undefined, npc: keyof NpcAffinity, amount: number) {
+  const current = { ...createNpcAffinity(), ...(affinity ?? {}) };
+  return { ...current, [npc]: Math.min(100, current[npc] + amount) };
+}
+
+function weekKey() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), 0, 1);
+  const week = Math.floor((now.getTime() - start.getTime()) / (7 * 86_400_000)) + 1;
+  return `${now.getFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+function createWeeklyBossState(character?: Character): WeeklyBossState {
+  const bosses = ["균열 대공", "검은 성녀의 환영", "탑 아래 잠든 거인", "시간을 먹는 사제"];
+  const key = weekKey();
+  const seed = (character?.fate.seed ?? 0) + Number(key.replace(/\D/g, ""));
+  return {
+    weekKey: key,
+    completed: false,
+    name: bosses[seed % bosses.length],
+    tier: Math.max(1, Math.min(12, Math.floor((character?.level ?? 1) / 12) + 1)),
+  };
+}
+
+function normalizeWeeklyBoss(weeklyBoss: WeeklyBossState | undefined, character: Character) {
+  if (!weeklyBoss || weeklyBoss.weekKey !== weekKey()) return createWeeklyBossState(character);
+  return weeklyBoss;
+}
+
+function createWeeklyBossMonster(character: Character, weeklyBoss: WeeklyBossState) {
+  const level = character.level + weeklyBoss.tier * 5;
+  return {
+    id: `weekly-${weeklyBoss.weekKey}`,
+    name: weeklyBoss.name,
+    level,
+    hp: 420 + level * 42,
+    maxHp: 420 + level * 42,
+    attack: 36 + level * 7,
+    defense: 18 + level * 3,
+    exp: 260 + level * 34,
+    gold: 420 + level * 42,
+    pattern: { attack: 0.42, defend: 0.16, special: 0.42 },
+    specialName: "균열 왕권",
+  };
+}
+
+function createIdleRewardState(): IdleRewardState {
+  return { lastSeenAt: new Date().toISOString(), pendingGold: 0, pendingMaterials: 0, pendingTowerKeys: 0, cappedHours: 0 };
+}
+
+function calculateIdleReward(idle: IdleRewardState | undefined, character: Character) {
+  const lastSeenAt = idle?.lastSeenAt ?? new Date().toISOString();
+  const elapsedHours = Math.max(0, (Date.now() - new Date(lastSeenAt).getTime()) / 3_600_000);
+  const cappedHours = Math.min(8, elapsedHours);
+  return {
+    lastSeenAt,
+    pendingGold: Math.floor(cappedHours * (35 + character.level * 4)),
+    pendingMaterials: Math.floor(cappedHours / 1.5),
+    pendingTowerKeys: character.level >= 10 ? Math.floor(cappedHours / 4) : 0,
+    cappedHours,
+  };
+}
+
+function createRewardChoice(source: DungeonRunInfo["type"]): RewardChoiceState {
+  return {
+    source: source === "weekly" ? "주간 보스" : source === "rift" ? "일일 균열" : source === "tower" ? "무한탑 보스" : "던전 보스",
+    choices: [
+      { id: "equipment-box", title: "장비 상자", text: "현재 레벨 기준 희귀 이상 장비 1개" },
+      { id: "skill-fragment", title: "스킬 조각", text: "스킬 포인트 +2" },
+      { id: "enhance-stone", title: "재련석", text: "장비 옵션 재련 재료 3개" },
+    ],
+  };
+}
+
+function createSeasonAlbum(): SeasonAlbumState {
+  const season = currentTowerSeason();
+  return {
+    seasonKey: season.key,
+    claimed: false,
+    entries: [
+      { id: "album-encounter-1", category: "기연", name: "운명절단", hint: "이벤트방 기연에서 발견", collected: false },
+      { id: "album-encounter-2", category: "기연", name: "성락보", hint: "일일 균열에서 발견 확률 상승", collected: false },
+      { id: "album-boss-1", category: "보스", name: "고블린 킹", hint: "초심자 던전 보스 처치", collected: false },
+      { id: "album-boss-2", category: "보스", name: "균열의 문지기", hint: "탑 또는 균열 보스 처치", collected: false },
+      { id: "album-equipment-1", category: "장비", name: "전설 장비", hint: "전설 이상 장비 획득", collected: false },
+      { id: "album-relic-1", category: "유물", name: "별핵 파편", hint: "보스 또는 일일 균열에서 유물 획득", collected: false },
+    ],
+  };
+}
+
+function normalizeSeasonAlbum(album: SeasonAlbumState | undefined) {
+  if (!album || album.seasonKey !== currentTowerSeason().key) return createSeasonAlbum();
+  const template = createSeasonAlbum();
+  const collected = new Set(album.entries.filter((entry) => entry.collected).map((entry) => entry.id));
+  return { ...album, entries: template.entries.map((entry) => ({ ...entry, collected: collected.has(entry.id) || album.entries.some((item) => item.name === entry.name && item.collected) })) };
+}
+
+function collectAlbumEntry(album: SeasonAlbumState | undefined, name: string) {
+  const normalized = normalizeSeasonAlbum(album);
+  return {
+    ...normalized,
+    entries: normalized.entries.map((entry) => {
+      const collected = entry.collected
+        || name.includes(entry.name)
+        || (entry.name === "전설 장비" && (name.includes("전설") || name.includes("신화")))
+        || (entry.category === "유물" && name.length > 0 && ["별핵", "용혈", "달빛", "시간", "세계수"].some((key) => name.includes(key)));
+      return { ...entry, collected };
+    }),
+  };
+}
+
+function createAchievementDetails(): AchievementDetail[] {
+  return [
+    { id: "ach-title-first", title: "탑의 첫 등반자", condition: "무한탑 10층 클리어", hint: "10층 단위 보스를 노려라", effect: "칭호 수집률 증가", unlocked: false },
+    { id: "ach-no-death", title: "흔들리지 않는 목걸이", condition: "무한탑 노데스 클리어 기록", hint: "여관과 축복을 활용하라", effect: "노데스 랭킹 기록", unlocked: false },
+    { id: "ach-collector", title: "기연 수집가", condition: "기연 3개 발견", hint: "이벤트방과 일일 균열을 반복 탐험", effect: "앨범 완성에 유리", unlocked: false },
+    { id: "ach-relic", title: "유물 감정사", condition: "유물 1개 획득", hint: "보스와 주간 보스를 처치", effect: "장기 성장 축 개방", unlocked: false },
+  ];
+}
+
+function updateAchievementDetails(achievements: AchievementDetail[] | undefined, character: Character, ranking: TowerRanking) {
+  const current = achievements?.length ? achievements : createAchievementDetails();
+  return current.map((achievement) => {
+    const unlocked =
+      achievement.unlocked
+      || (achievement.id === "ach-title-first" && (character.titles ?? []).length > 0)
+      || (achievement.id === "ach-no-death" && ranking.noDeathFloor > 0)
+      || (achievement.id === "ach-collector" && (character.specialSkills ?? []).length >= 3)
+      || (achievement.id === "ach-relic" && (character.relics ?? []).length > 0);
+    return { ...achievement, unlocked };
+  });
+}
+
+function rollCompanion(character: Character): Companion {
+  const random = seeded(character.fate.seed + Date.now() + (character.companions?.length ?? 0) * 37);
+  const table: Companion[] = [
+    { id: "comp-memory-knight", name: "현실 기억의 기사", kind: "동료", level: 1, exp: 0, text: "전투 시작마다 잊힌 용기를 불러낸다.", effects: { assistDamageRate: 0.08 } },
+    { id: "comp-star-sprite", name: "별가루 정령", kind: "정령", level: 1, exp: 0, text: "기연의 냄새를 먼저 맡는다.", effects: { encounterRate: 0.05, dropRate: 0.04 } },
+    { id: "comp-moon-cat", name: "청월 고양이", kind: "펫", level: 1, exp: 0, text: "보물방에서 꼬리를 세운다.", effects: { goldRate: 0.08, dropRate: 0.03 } },
+  ];
+  return { ...table[Math.floor(random() * table.length)], id: `${table[Math.floor(random() * table.length)].id}-${Date.now()}` };
+}
+
+function growCompanions(character: Character, exp: number) {
+  const logs: GameLog[] = [];
+  const companions = (character.companions ?? []).map((companion) => {
+    const nextExp = companion.exp + exp;
+    if (nextExp >= companion.level * 100) {
+      logs.push(log(`동료 성장: ${companion.name} Lv.${companion.level + 1}`, "good"));
+      return { ...companion, level: companion.level + 1, exp: nextExp - companion.level * 100 };
+    }
+    return { ...companion, exp: nextExp };
+  });
+  return { character: { ...character, companions }, logs };
+}
+
+function rollRune(character: Character): Rune {
+  const random = seeded(character.fate.seed + Date.now() + (character.runes?.length ?? 0) * 101);
+  const element = character.fate.element;
+  const table: Rune[] = [
+    { id: "rune-blade", name: `${element} 검문장`, element, text: "공격형 운명 회로를 연다.", effects: { attackRate: 0.05 } },
+    { id: "rune-orbit", name: `${element} 궤도문장`, element, text: "마법과 기연의 방향을 맞춘다.", effects: { magicRate: 0.05, mpCostRate: -0.04 } },
+    { id: "rune-guard", name: `${element} 수호문장`, element, text: "방어 태세가 안정된다.", effects: { defenseRate: 0.06 } },
+    { id: "rune-fate", name: `${element} 운명문장`, element, text: "치명적인 순간을 앞당긴다.", effects: { critRate: 0.035 } },
+  ];
+  const rune = table[Math.floor(random() * table.length)];
+  return { ...rune, id: `${rune.id}-${Date.now()}` };
+}
+
+function createExpeditionState(): ExpeditionState {
+  return { claimed: true };
+}
+
+function createLiveOpsConfig(): LiveOpsConfig {
+  return { eventName: currentTowerSeason().name, rewardMultiplier: 1, albumBonusGold: 1200, updatedAt: new Date().toISOString() };
+}
+
+function createNpcMemory(): NpcMemory {
+  return { church: [], inn: [], guild: [], blacksmith: [], merchant: [] };
+}
+
+function rememberNpc(memory: NpcMemory | undefined, npc: keyof NpcMemory, text: string) {
+  const current = { ...createNpcMemory(), ...(memory ?? {}) };
+  return { ...current, [npc]: [text, ...current[npc]].slice(0, 4) };
+}
+
+function createAdaptiveState(): AdaptiveState {
+  return { winStreak: 0, lossStreak: 0 };
+}
+
+function updateAdaptiveOnWin(adaptive: AdaptiveState | undefined) {
+  const current = adaptive ?? createAdaptiveState();
+  const winStreak = current.winStreak + 1;
+  return {
+    winStreak,
+    lossStreak: 0,
+    bonusObjective: winStreak >= 3 ? "다음 보스전에서 아이템 없이 승리하면 시즌 XP 보너스" : undefined,
+  };
+}
+
+function updateAdaptiveOnLoss(adaptive: AdaptiveState | undefined) {
+  const current = adaptive ?? createAdaptiveState();
+  const lossStreak = current.lossStreak + 1;
+  return {
+    winStreak: 0,
+    lossStreak,
+    bonusObjective: lossStreak >= 2 ? "교회 축복 또는 여관 회복 권장: 다음 던전 보급 확률 증가" : current.bonusObjective,
+  };
+}
+
+function reforgeOptions(equipment: Equipment, character: Character): Equipment {
+  const random = seeded(character.fate.seed + equipment.enhance * 811 + Date.now());
+  const statKeys = ["STR", "DEX", "INT", "VIT", "WIS", "LUK"] as const;
+  const statKey = statKeys[Math.floor(random() * statKeys.length)];
+  const grade = Math.max(1, equipment.enhance + equipment.masteryLevel);
+  const option = random() > 0.5 ? `치명타 +${4 + Math.floor(grade / 4)}%` : `드랍률 +${6 + Math.floor(grade / 3)}%`;
+  return {
+    ...equipment,
+    options: [`${statKey} +${3 + Math.floor(grade / 5)}`, option],
+  };
+}
+
+function grantTowerSeasonAwards(character: Character, floor: number) {
+  const titles = new Set(character.titles ?? []);
+  const cosmetics = new Set(character.cosmetics ?? []);
+  if (floor >= 10) titles.add("탑의 첫 등반자");
+  if (floor >= 50) titles.add("균열을 걷는 자");
+  if (floor >= 100) cosmetics.add("청월의 망토");
+  if (floor >= 250) cosmetics.add("시간 균열 오라");
+  return {
+    ...character,
+    titles: [...titles],
+    cosmetics: [...cosmetics],
+    activeTitle: character.activeTitle ?? [...titles][0],
+    activeCosmetic: character.activeCosmetic ?? [...cosmetics][0],
+  };
+}
+
 function finishCombat(character: Character, monster: NonNullable<CombatState["monster"]>, inventory: InventoryItem[], quests: Quest[], boss: boolean, rewardMultiplier = 1) {
-  const expRate = 1 + (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.expRate ?? 0), 0);
-  const goldRate = 1 + (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.goldRate ?? 0), 0);
+  const synergies = calculateBuildSynergies(character);
+  const relics = character.relics ?? [];
+  const companionGoldRate = (character.companions ?? []).reduce((sum, companion) => sum + (companion.effects.goldRate ?? 0), 0);
+  const companionDropRate = (character.companions ?? []).reduce((sum, companion) => sum + (companion.effects.dropRate ?? 0), 0);
+  const expRate = 1 + (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.expRate ?? 0), 0) + synergies.reduce((sum, synergy) => sum + (synergy.effects.expRate ?? 0), 0) + relics.reduce((sum, relic) => sum + (relic.effects.expRate ?? 0), 0);
+  const goldRate = 1 + companionGoldRate + (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.goldRate ?? 0), 0) + synergies.reduce((sum, synergy) => sum + (synergy.effects.goldRate ?? 0), 0) + relics.reduce((sum, relic) => sum + (relic.effects.goldRate ?? 0), 0);
   const gainedExp = Math.round(monster.exp * expRate * rewardMultiplier);
   const gainedGold = Math.round(monster.gold * goldRate * rewardMultiplier);
   let nextCharacter = normalizeCharacter({ ...character, exp: character.exp + gainedExp, gold: character.gold + gainedGold });
@@ -754,7 +1623,10 @@ function finishCombat(character: Character, monster: NonNullable<CombatState["mo
   const dropChance = 0.32
     + character.stats.LUK * 0.006
     + character.traits.reduce((sum, trait) => sum + (trait.effects?.dropRate ?? 0), 0)
-    + (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.dropRate ?? 0), 0);
+    + (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.dropRate ?? 0), 0)
+    + synergies.reduce((sum, synergy) => sum + (synergy.effects.dropRate ?? 0), 0)
+    + relics.reduce((sum, relic) => sum + (relic.effects.dropRate ?? 0), 0)
+    + companionDropRate;
   if (Math.random() < dropChance || boss) {
     const equipment = rollEquipment(Math.max(character.level, monster.level), character.stats.LUK, character.fate.seed + monster.exp + Date.now(), boss && rewardMultiplier > 1 ? "희귀" : boss ? "희귀" : undefined);
     const auto = autoEquip(nextCharacter, nextInventory, equipment);
@@ -781,7 +1653,7 @@ function finishCombat(character: Character, monster: NonNullable<CombatState["mo
     .map((blessing) => ({ ...blessing, runsLeft: blessing.runsLeft - (boss ? 1 : 0) }))
     .filter((blessing) => blessing.runsLeft > 0);
   nextCharacter = applyLevelUps(nextCharacter);
-  return { character: nextCharacter, inventory: nextInventory, quests: nextQuests, logs };
+  return { character: nextCharacter, inventory: nextInventory, quests: nextQuests, logs, seasonXp: 12 + Math.floor(monster.level / 2) + (boss ? 25 : 0) };
 }
 
 function normalizeCharacter(character: Character): Character {
@@ -790,6 +1662,11 @@ function normalizeCharacter(character: Character): Character {
     towerFloor: character.towerFloor ?? 1,
     blessings: character.blessings ?? [],
     specialSkills: character.specialSkills ?? [],
+    relics: character.relics ?? [],
+    titles: character.titles ?? [],
+    cosmetics: character.cosmetics ?? [],
+    companions: character.companions ?? [],
+    runes: character.runes ?? [],
     equipment: Object.fromEntries(
       Object.entries(character.equipment).map(([slot, equipment]) => [
         slot,
@@ -804,6 +1681,67 @@ function normalizeCharacter(character: Character): Character {
       ]),
     ),
   };
+}
+
+function normalizeGameState(state: GameState): GameState {
+  const character = state.character ? normalizeCharacter(state.character) : undefined;
+  return {
+    ...state,
+    character,
+    storage: state.storage ?? [],
+    storageCapacity: state.storageCapacity ?? 5,
+    dailyRift: character ? normalizeDailyRift(state.dailyRift, character) : (state.dailyRift ?? createDailyRiftState()),
+    encounterCodex: normalizeEncounterCodex(state.encounterCodex),
+    seasonPass: normalizeSeasonPass(state.seasonPass),
+    dailyTasks: normalizeDailyTasks(state.dailyTasks, character),
+    weeklyBoss: character ? normalizeWeeklyBoss(state.weeklyBoss, character) : (state.weeklyBoss ?? createWeeklyBossState()),
+    idleReward: character ? calculateIdleReward(state.idleReward, character) : (state.idleReward ?? createIdleRewardState()),
+    towerRanking: state.towerRanking ?? createTowerRanking(),
+    npcAffinity: { ...createNpcAffinity(), ...(state.npcAffinity ?? {}) },
+    beginnerClears: state.beginnerClears ?? 0,
+    seasonAlbum: normalizeSeasonAlbum(state.seasonAlbum),
+    achievementDetails: character ? updateAchievementDetails(state.achievementDetails, character, state.towerRanking ?? createTowerRanking()) : (state.achievementDetails ?? createAchievementDetails()),
+    expedition: state.expedition ?? createExpeditionState(),
+    liveOps: state.liveOps ?? createLiveOpsConfig(),
+    npcMemory: { ...createNpcMemory(), ...(state.npcMemory ?? {}) },
+    adaptive: state.adaptive ?? createAdaptiveState(),
+  };
+}
+
+function portableSaveState(state: GameState) {
+  return {
+    phase: state.phase,
+    character: state.character,
+    dungeon: state.dungeon,
+    currentRun: state.currentRun,
+    roomIndex: state.roomIndex,
+    inventory: state.inventory,
+    storage: state.storage,
+    storageCapacity: state.storageCapacity,
+    quests: state.quests,
+    dailyRift: state.dailyRift,
+    encounterCodex: state.encounterCodex,
+    seasonPass: state.seasonPass,
+    dailyTasks: state.dailyTasks,
+    weeklyBoss: state.weeklyBoss,
+    idleReward: state.idleReward,
+    rewardChoice: state.rewardChoice,
+    towerRanking: state.towerRanking,
+    npcAffinity: state.npcAffinity,
+    beginnerClears: state.beginnerClears,
+    seasonAlbum: state.seasonAlbum,
+    achievementDetails: state.achievementDetails,
+    expedition: state.expedition,
+    liveOps: state.liveOps,
+    npcMemory: state.npcMemory,
+    adaptive: state.adaptive,
+    logs: state.logs.slice(-80),
+    lastSavedAt: state.lastSavedAt,
+  };
+}
+
+function isPortableSaveEnvelope(value: unknown): value is { state: Partial<GameState> } {
+  return typeof value === "object" && value !== null && "state" in value && typeof (value as { state?: unknown }).state === "object";
 }
 
 function getUsableSkills(character: Character): Skill[] {
@@ -975,12 +1913,15 @@ function growEquippedGear(character: Character, exp: number) {
 function rollCritical(character: Character, random: () => number, skillMultiplier = 1) {
   const traitRate = character.traits.reduce((sum, trait) => sum + (trait.effects?.critRate ?? 0), 0);
   const blessingRate = (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.critRate ?? 0), 0);
+  const synergyRate = calculateBuildSynergies(character).reduce((sum, synergy) => sum + (synergy.effects.critRate ?? 0), 0);
+  const relicRate = (character.relics ?? []).reduce((sum, relic) => sum + (relic.effects.critRate ?? 0), 0);
+  const runeRate = (character.runes ?? []).reduce((sum, rune) => sum + (rune.effects.critRate ?? 0), 0);
   const gearRate = Object.values(character.equipment).reduce((sum, item) => {
     const option = item?.options.find((text) => text.startsWith("치명타 +"));
     const value = option ? Number(option.replace(/[^0-9]/g, "")) / 100 : 0;
     return sum + value;
   }, 0);
-  return random() < (0.08 + character.stats.LUK * 0.006 + traitRate + blessingRate + gearRate) * skillMultiplier;
+  return random() < (0.08 + character.stats.LUK * 0.006 + traitRate + blessingRate + synergyRate + relicRate + runeRate + gearRate) * skillMultiplier;
 }
 
 function rollBlessing(character: Character): Blessing {

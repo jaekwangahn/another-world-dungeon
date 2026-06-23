@@ -1,6 +1,6 @@
 import { rarityOrder, roomFlavor } from "@/data/gameData";
 import { seeded } from "@/lib/fate";
-import type { Character, DungeonRoom, Equipment, EquipmentSlot, Monster, Rarity, StatKey, Stats } from "@/lib/types";
+import type { BuildSynergy, Character, DungeonRoom, Equipment, EquipmentSlot, Monster, Rarity, Relic, StatKey, Stats } from "@/lib/types";
 
 const slots: EquipmentSlot[] = ["무기", "투구", "갑옷", "장갑", "신발", "망토", "반지", "목걸이", "귀걸이"];
 const weapons = ["장검", "도끼", "창", "단검", "활", "지팡이"];
@@ -26,18 +26,31 @@ export function attackPower(character: Character) {
   const weaponAttack = (weapon?.attack ?? 0) + (weapon?.masteryLevel ?? 1) * 2;
   const traitRate = character.traits.reduce((sum, trait) => sum + (trait.effects?.attackRate ?? 0), 0);
   const blessingRate = (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.attackRate ?? 0), 0);
-  return Math.round((character.stats.STR * 2 + character.stats.DEX + weaponAttack + character.level * 3) * (1 + traitRate + blessingRate));
+  const synergyRate = calculateBuildSynergies(character).reduce((sum, synergy) => sum + (synergy.effects.attackRate ?? 0), 0);
+  const relicRate = activeRelics(character).reduce((sum, relic) => sum + (relic.effects.attackRate ?? 0), 0);
+  const runeRate = (character.runes ?? []).reduce((sum, rune) => sum + (rune.effects.attackRate ?? 0), 0);
+  return Math.round((character.stats.STR * 2 + character.stats.DEX + weaponAttack + character.level * 3) * (1 + traitRate + blessingRate + synergyRate + relicRate + runeRate));
 }
 
 export function magicPower(character: Character) {
-  return Math.round(character.stats.INT * 2.5 + character.stats.WIS + character.level * 3);
+  const synergyRate = calculateBuildSynergies(character).reduce((sum, synergy) => sum + (synergy.effects.magicRate ?? 0), 0);
+  const relicRate = activeRelics(character).reduce((sum, relic) => sum + (relic.effects.magicRate ?? 0), 0);
+  const runeRate = (character.runes ?? []).reduce((sum, rune) => sum + (rune.effects.magicRate ?? 0), 0);
+  return Math.round((character.stats.INT * 2.5 + character.stats.WIS + character.level * 3) * (1 + synergyRate + relicRate + runeRate));
 }
 
 export function defensePower(character: Character) {
   const gear = Object.values(character.equipment).reduce((sum, item) => sum + (item?.defense ?? 0) + (item?.masteryLevel ?? 1), 0);
   const traitRate = character.traits.reduce((sum, trait) => sum + (trait.effects?.defenseRate ?? 0), 0);
   const blessingRate = (character.blessings ?? []).reduce((sum, blessing) => sum + (blessing.effects.defenseRate ?? 0), 0);
-  return Math.max(0, Math.round((character.stats.VIT * 1.6 + gear + character.level * 2) * (1 + traitRate + blessingRate)));
+  const synergyRate = calculateBuildSynergies(character).reduce((sum, synergy) => sum + (synergy.effects.defenseRate ?? 0), 0);
+  const relicRate = activeRelics(character).reduce((sum, relic) => sum + (relic.effects.defenseRate ?? 0), 0);
+  const runeRate = (character.runes ?? []).reduce((sum, rune) => sum + (rune.effects.defenseRate ?? 0), 0);
+  return Math.max(0, Math.round((character.stats.VIT * 1.6 + gear + character.level * 2) * (1 + traitRate + blessingRate + synergyRate + relicRate + runeRate)));
+}
+
+function activeRelics(character: Character) {
+  return ((character as Character & { relics?: Relic[] }).relics ?? []);
 }
 
 export function expToNext(level: number) {
@@ -128,6 +141,102 @@ export function generateTowerDungeon(character: Character, floor: number): Dunge
   }
 
   return rooms;
+}
+
+export function generateDailyRiftDungeon(character: Character, tier: number, seed: number): DungeonRoom[] {
+  const random = seeded(character.fate.seed + seed + tier * 4099);
+  const kinds: DungeonRoom["kind"][] = ["이벤트방", "몬스터방", "함정방", "보물방", "몬스터방", "휴식방"];
+  const length = 7 + Math.min(4, tier);
+  const rooms: DungeonRoom[] = [];
+  const levelBonus = tier * 4 + Math.floor(character.level * 0.18);
+
+  for (let index = 0; index < length; index += 1) {
+    let kind: DungeonRoom["kind"];
+    if (index === 0) kind = "이벤트방";
+    else if (index === length - 1) kind = "보스방";
+    else kind = kinds[Math.floor(random() * kinds.length)];
+    const monsters = kind === "몬스터방" || kind === "보스방"
+      ? createMonsterGroup(character.level + levelBonus + Math.floor(index / 2), kind === "보스방" ? "boss" : "normal", seed + index * 503, random)
+      : undefined;
+    const flavor = roomFlavor[kind][Math.floor(random() * roomFlavor[kind].length)];
+    rooms.push({
+      id: `daily-rift-${seed}-${index}`,
+      kind,
+      title: kind === "보스방" ? `일일 균열 심장부 T${tier}` : `일일 균열 T${tier} · ${index + 1}파동`,
+      description: `${flavor} 균열의 가장자리가 오늘의 날짜처럼 한 번만 열렸다 닫힐 준비를 한다.`,
+      choices: buildChoices(kind),
+      monster: monsters?.[0],
+      monsters,
+    });
+  }
+
+  return rooms;
+}
+
+export function currentTowerSeason(date = new Date()) {
+  const seasons = [
+    { name: "화염 왕관 시즌", mod: "공격형 빌드 보상 증가", rewardBonus: 0.18 },
+    { name: "별무리 순례 시즌", mod: "기연과 특수 스킬 발견률 증가", rewardBonus: 0.12 },
+    { name: "심연 채굴 시즌", mod: "골드와 장비 드랍 증가", rewardBonus: 0.22 },
+    { name: "청월 마나 시즌", mod: "마나/기연 빌드 효율 증가", rewardBonus: 0.16 },
+  ];
+  const seasonLengthDays = 28;
+  const epoch = new Date(date.getFullYear(), 0, 1).getTime();
+  const day = Math.floor((date.getTime() - epoch) / 86_400_000);
+  const seasonIndex = Math.floor(day / seasonLengthDays);
+  const startsAt = new Date(epoch + seasonIndex * seasonLengthDays * 86_400_000);
+  const endsAt = new Date(epoch + (seasonIndex + 1) * seasonLengthDays * 86_400_000 - 1);
+  return {
+    ...seasons[seasonIndex % seasons.length],
+    key: `${date.getFullYear()}-S${seasonIndex + 1}`,
+    startsAt: startsAt.toISOString(),
+    endsAt: endsAt.toISOString(),
+  };
+}
+
+export function calculateBuildSynergies(character: Character): BuildSynergy[] {
+  const equipment = Object.values(character.equipment).filter(Boolean) as Equipment[];
+  const synergies: BuildSynergy[] = [];
+  const hasCritGear = equipment.filter((item) => item.options.some((option) => option.startsWith("치명타 +"))).length;
+  const setCount = equipment.filter((item) => item.setName === "용기사 세트").length;
+  const highMastery = equipment.filter((item) => (item.masteryLevel ?? 1) >= 5).length;
+  const hiddenJob = !!character.job.hidden;
+  const specialCount = character.specialSkills?.length ?? 0;
+  const lucky = character.traits.some((trait) => trait.id === "lucky" || trait.id === "worldline");
+  const armored = ["투구", "갑옷", "장갑", "신발", "망토"].filter((slot) => character.equipment[slot as EquipmentSlot]).length;
+
+  if (hiddenJob && specialCount >= 1) {
+    synergies.push({ id: "worldline-awakened", name: "세계선 각성", tier: specialCount >= 3 ? "III" : "II", text: "숨겨진 직업과 기연 스킬이 공명해 공격/마법/드랍이 상승", effects: { attackRate: 0.12, magicRate: 0.12, dropRate: 0.12 } });
+  }
+  if (hasCritGear >= 2 || lucky) {
+    synergies.push({ id: "fatal-luck", name: "치명적 행운", tier: hasCritGear >= 3 ? "III" : "I", text: "행운 특성 또는 치명 장비가 크리티컬 확률을 밀어 올림", effects: { critRate: hasCritGear >= 3 ? 0.1 : 0.06, goldRate: 0.06 } });
+  }
+  if (setCount >= 2) {
+    synergies.push({ id: "dragon-oath", name: "용기사 세트 공명", tier: setCount >= 6 ? "III" : setCount >= 4 ? "II" : "I", text: "용기사 세트 착용 수에 따라 공격과 방어가 함께 상승", effects: { attackRate: 0.06 + setCount * 0.02, defenseRate: 0.05 + setCount * 0.015 } });
+  }
+  if (highMastery >= 3) {
+    synergies.push({ id: "tempered-kit", name: "숙련 장비술", tier: highMastery >= 6 ? "III" : "II", text: "자주 사용한 장비들이 손에 붙어 전체 전투 효율 상승", effects: { attackRate: 0.07, defenseRate: 0.07, expRate: 0.05 } });
+  }
+  if (armored >= 5) {
+    synergies.push({ id: "full-guard", name: "전신 방호", tier: "I", text: "방어구 슬롯을 갖춰 탑 장기전에 강해짐", effects: { defenseRate: 0.12 } });
+  }
+  if (character.job.archetype === "magic" && character.maxMp >= 180) {
+    synergies.push({ id: "mana-overflow", name: "마나 과충전", tier: "II", text: "마법 직업과 높은 MP가 맞물려 마법 피해 증가", effects: { magicRate: 0.14, critRate: 0.03 } });
+  }
+  if (character.fate.element === "수(水)" && character.job.name === "차원술사" && character.traits.some((trait) => trait.id === "mana")) {
+    synergies.push({ id: "water-dimensional-mana", name: "수월 차원회로", tier: "III", text: "수(水), 차원술사, 마나체질이 연결되어 스킬 MP 소모 감소", effects: { magicRate: 0.1, mpCostRate: -0.18 } });
+  }
+  if (character.fate.element === "화(火)" && character.job.name.includes("용") && specialCount >= 1) {
+    synergies.push({ id: "flame-dragon-fate", name: "화룡 운명식", tier: "III", text: "화(火) 기운과 용 계열 운명이 폭발적인 크리티컬을 만든다", effects: { attackRate: 0.12, critRate: 0.08 } });
+  }
+
+  return synergies.slice(0, 5);
+}
+
+export function skillMpCost(character: Character, baseCost: number) {
+  const rate = calculateBuildSynergies(character).reduce((sum, synergy) => sum + (synergy.effects.mpCostRate ?? 0), 0)
+    + (character.runes ?? []).reduce((sum, rune) => sum + (rune.effects.mpCostRate ?? 0), 0);
+  return Math.max(0, Math.ceil(baseCost * (1 + rate)));
 }
 
 function buildChoices(kind: DungeonRoom["kind"]) {

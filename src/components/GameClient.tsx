@@ -4,8 +4,13 @@ import { motion } from "framer-motion";
 import {
   Backpack,
   Bed,
+  BookOpen,
   Castle,
+  Clock3,
   Dices,
+  Download,
+  Flame,
+  Gem,
   Save,
   HandHeart,
   Heart,
@@ -15,11 +20,14 @@ import {
   Shield,
   Sparkles,
   Swords,
+  Target,
+  Trophy,
+  Upload,
   WandSparkles,
 } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { ChangeEvent, FormEvent, useRef, useState } from "react";
 import { rarityColor, roomVisuals } from "@/data/gameData";
-import { attackPower, defensePower, equipmentScore, magicPower } from "@/lib/gameEngine";
+import { attackPower, calculateBuildSynergies, defensePower, equipmentScore, magicPower, skillMpCost } from "@/lib/gameEngine";
 import type { BirthProfile, Equipment, EquipmentSlot, Gender, InventoryItem, Skill } from "@/lib/types";
 import { useGameStore } from "@/store/gameStore";
 
@@ -34,6 +42,7 @@ export function GameClient() {
   return (
     <main className="min-h-screen bg-[#08090d] text-zinc-100">
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(64,89,120,0.28),transparent_32%),radial-gradient(circle_at_80%_10%,rgba(111,68,48,0.22),transparent_30%),linear-gradient(180deg,#08090d,#11100f_55%,#070707)]" />
+      <div className="magic-field fixed inset-0 pointer-events-none" />
       <div className="relative mx-auto flex min-h-screen w-full max-w-[1680px] flex-col gap-3 px-3 py-3 sm:px-5">
         <TopBar />
         {store.phase === "create" || !character ? (
@@ -87,7 +96,30 @@ function TopBar() {
   const character = useGameStore((state) => state.character);
   const reset = useGameStore((state) => state.reset);
   const manualSave = useGameStore((state) => state.manualSave);
+  const exportSave = useGameStore((state) => state.exportSave);
+  const importSave = useGameStore((state) => state.importSave);
   const lastSavedAt = useGameStore((state) => state.lastSavedAt);
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  const downloadSave = () => {
+    const json = exportSave();
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const safeName = character?.profile.name.replace(/[^a-zA-Z0-9가-힣_-]/g, "_") || "adventurer";
+    link.href = url;
+    link.download = `another-world-dungeon-${safeName}-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const uploadSave = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    importSave(text);
+    event.target.value = "";
+  };
   if (!character) {
     return (
       <header className="flex items-center justify-between border border-zinc-800 bg-zinc-950/70 px-4 py-3 backdrop-blur">
@@ -106,7 +138,7 @@ function TopBar() {
   }
 
   return (
-    <header className="grid grid-cols-2 gap-2 border border-zinc-800 bg-zinc-950/78 px-4 py-3 backdrop-blur lg:grid-cols-[1.4fr_1fr_1fr_1fr_0.8fr_1fr_auto_auto]">
+    <header className="grid grid-cols-2 gap-2 border border-zinc-800 bg-zinc-950/78 px-4 py-3 backdrop-blur lg:grid-cols-[1.4fr_1fr_1fr_1fr_0.8fr_1fr_auto_auto_auto_auto]">
       <div>
         <p className="text-xs text-zinc-500">프로필</p>
         <h1 className="truncate text-lg font-semibold">{character.profile.name} · {character.job.name}</h1>
@@ -130,6 +162,23 @@ function TopBar() {
         <Save size={16} />
         저장
       </button>
+      <button
+        className="flex h-10 items-center justify-center gap-2 border border-sky-700/70 px-3 text-sm text-sky-100 hover:border-sky-400 hover:bg-sky-950/40"
+        onClick={downloadSave}
+        title="JSON 내보내기"
+      >
+        <Download size={16} />
+        내보내기
+      </button>
+      <button
+        className="flex h-10 items-center justify-center gap-2 border border-violet-700/70 px-3 text-sm text-violet-100 hover:border-violet-400 hover:bg-violet-950/40"
+        onClick={() => importInputRef.current?.click()}
+        title="JSON 가져오기"
+      >
+        <Upload size={16} />
+        가져오기
+      </button>
+      <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" onChange={uploadSave} />
       <button
         className="flex h-10 items-center justify-center gap-2 border border-zinc-700 px-3 text-sm text-zinc-300 hover:border-zinc-500 hover:bg-zinc-900"
         onClick={reset}
@@ -275,14 +324,21 @@ function LeftPanel() {
           ))}
         </div>
       </Panel>
+      <BuildSynergyPanel />
+      <BuildGuidePanel />
+      <EncounterCodexPanel />
+      <RelicPanel />
+      <CollectionPanel />
+      <MonetizationPanel />
     </aside>
   );
 }
 
 function TownView() {
-  const { enterDungeon, enterTower, reincarnate, receiveBlessing, stayAtInn, visitGuild, buyStorageSlot, storageCapacity, character } = useGameStore();
+  const { enterDungeon, enterTower, enterDailyRift, enterWeeklyBoss, quickExploreBeginner, reincarnate, receiveBlessing, stayAtInn, visitGuild, buyStorageSlot, summonCompanion, equipRune, startExpedition, claimExpedition, syncCloudSave, loadCloudSave, storageCapacity, character, dailyRift, weeklyBoss, beginnerClears } = useGameStore();
   const [enhanceOpen, setEnhanceOpen] = useState(false);
   const [potionShopOpen, setPotionShopOpen] = useState(false);
+  const rift = character ? dailyRift : undefined;
   return (
     <div className="grid h-full content-between gap-6">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="min-h-[420px] bg-[linear-gradient(rgba(8,9,13,0.18),rgba(8,9,13,0.88)),url('https://images.unsplash.com/photo-1514539079130-25950c84af65?auto=format&fit=crop&w=1400&q=80')] bg-cover bg-center p-5">
@@ -294,7 +350,12 @@ function TownView() {
           </p>
           {character && character.level >= 10 && (
             <div className="mt-5 max-w-xl border border-sky-600/50 bg-sky-950/30 px-3 py-2 text-sm text-sky-100">
-              무한탑 개방 · 현재 도전 가능 층 {character.towerFloor ?? 1}/999
+              시즌제 무한탑 개방 · 현재 도전 가능 층 {character.towerFloor ?? 1}/999
+            </div>
+          )}
+          {rift && (
+            <div className="mt-3 max-w-xl border border-violet-600/50 bg-violet-950/30 px-3 py-2 text-sm text-violet-100">
+              일일 균열 T{rift.tier} · {rift.completed ? "오늘 완료" : "오늘 입장 가능"}
             </div>
           )}
           {character && (character.blessings ?? []).length > 0 && (
@@ -308,17 +369,29 @@ function TownView() {
           )}
         </div>
       </motion.div>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-9">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
         <Action onClick={enterDungeon} icon={<Castle size={18} />} label="던전 입장" />
+        <Action onClick={quickExploreBeginner} icon={<Dices size={18} />} label="빠른 탐험" disabled={!character || beginnerClears <= 0} />
         <Action onClick={enterTower} icon={<Landmark size={18} />} label={character && character.level >= 10 ? `무한탑 ${character.towerFloor ?? 1}층` : "무한탑 잠김"} disabled={!character || character.level < 10} />
+        <Action onClick={enterDailyRift} icon={<Clock3 size={18} />} label={rift?.completed ? "균열 완료" : `일일 균열 T${rift?.tier ?? 1}`} disabled={!character || !!rift?.completed} />
+        <Action onClick={enterWeeklyBoss} icon={<Trophy size={18} />} label={weeklyBoss?.completed ? "주간 완료" : "주간 보스"} disabled={!character || !!weeklyBoss?.completed} />
         <Action onClick={() => setPotionShopOpen(true)} icon={<Heart size={18} />} label="물약 구매" />
         <Action onClick={buyStorageSlot} icon={<Package size={18} />} label={`창고 확장 ${storageCapacity ?? 5}칸`} />
         <Action onClick={() => setEnhanceOpen(true)} icon={<Shield size={18} />} label="장비 강화" />
         <Action onClick={receiveBlessing} icon={<Landmark size={18} />} label="교회 축복" />
         <Action onClick={stayAtInn} icon={<Bed size={18} />} label="여관 숙박" />
         <Action onClick={visitGuild} icon={<ScrollText size={18} />} label="길드협회" />
+        <Action onClick={summonCompanion} icon={<Sparkles size={18} />} label="동료 소환" />
+        <Action onClick={equipRune} icon={<Gem size={18} />} label="룬 각인" />
+        <Action onClick={startExpedition} icon={<Backpack size={18} />} label="원정 파견" />
+        <Action onClick={claimExpedition} icon={<Package size={18} />} label="원정 회수" />
+        <Action onClick={syncCloudSave} icon={<Save size={18} />} label="클라우드 저장" />
+        <Action onClick={loadCloudSave} icon={<Upload size={18} />} label="클라우드 불러오기" />
         <Action onClick={reincarnate} icon={<Sparkles size={18} />} label={character && character.level >= 100 ? "환생" : "환생 잠김"} disabled={!character || character.level < 100} />
       </div>
+      <LiveOpsStrip />
+      <TownMetaPanels />
+      <AdvancedProgressPanels />
       {potionShopOpen && <PotionShopModal onClose={() => setPotionShopOpen(false)} />}
       {enhanceOpen && <EnhanceModal onClose={() => setEnhanceOpen(false)} />}
     </div>
@@ -332,7 +405,9 @@ function DungeonView({ roomTitle }: { roomTitle: string }) {
   const image = roomVisuals[room.kind];
   const monsterCount = room.monsters?.length ?? (room.monster ? 1 : 0);
   const runLabel = store.currentRun?.type === "tower"
-    ? `무한탑 ${store.currentRun.floor}층 · 보상 x${store.currentRun.rewardMultiplier.toFixed(2)}`
+    ? `${store.currentRun.seasonName ?? "시즌제 무한탑"} · ${store.currentRun.floor}층 · 보상 x${store.currentRun.rewardMultiplier.toFixed(2)}`
+    : store.currentRun?.type === "rift"
+      ? `일일 균열 T${store.currentRun.floor} · 보상 x${store.currentRun.rewardMultiplier.toFixed(2)}`
     : "초심자 던전";
   return (
     <div className="grid gap-4">
@@ -344,9 +419,10 @@ function DungeonView({ roomTitle }: { roomTitle: string }) {
         <span className="border border-amber-700/50 px-3 py-1 text-sm text-amber-200">{room.kind}</span>
       </div>
       <div
-        className="min-h-[320px] border border-zinc-800 bg-cover bg-center p-5"
+        className={`relative min-h-[320px] overflow-hidden border border-zinc-800 bg-cover bg-center p-5 ${store.currentRun?.type === "rift" ? "rift-glow" : store.currentRun?.type === "tower" ? "tower-glow" : ""}`}
         style={{ backgroundImage: `linear-gradient(rgba(8,9,13,0.12),rgba(8,9,13,0.9)),url('${image}')` }}
       >
+        <div className="spark-rain pointer-events-none absolute inset-0" />
         <p className="max-w-2xl text-lg leading-8 text-zinc-100">{room.description}</p>
         {room.monster && (
           <div className="mt-6 max-w-md border border-rose-800/60 bg-rose-950/30 p-4">
@@ -357,6 +433,271 @@ function DungeonView({ roomTitle }: { roomTitle: string }) {
         )}
       </div>
     </div>
+  );
+}
+
+function LiveOpsStrip() {
+  const seasonPass = useGameStore((state) => state.seasonPass);
+  const dailyTasks = useGameStore((state) => state.dailyTasks);
+  const claimDailyTask = useGameStore((state) => state.claimDailyTask);
+  const claimSeasonReward = useGameStore((state) => state.claimSeasonReward);
+  const passLevel = Math.max(1, Math.min(50, Math.floor((seasonPass?.xp ?? 0) / 100) + 1));
+  const passProgress = (seasonPass?.xp ?? 0) % 100;
+  const claimed = seasonPass?.claimedLevels?.includes(passLevel);
+  return (
+    <div className="grid gap-2 xl:grid-cols-[1fr_1.2fr]">
+      <Panel title={`${seasonPass?.name ?? "균열 개척 시즌"} Lv.${passLevel}`} icon={<Trophy size={17} />}>
+        <div className="flex items-center justify-between gap-3 text-sm">
+          <span className="text-zinc-400">시즌 XP {passProgress}/100</span>
+          <button
+            onClick={() => claimSeasonReward(passLevel)}
+            disabled={claimed}
+            className="h-8 border border-amber-600/60 px-3 text-xs text-amber-100 hover:bg-amber-950/40 disabled:opacity-40"
+          >
+            {claimed ? "수령 완료" : `Lv.${passLevel} 보상`}
+          </button>
+        </div>
+        <div className="mt-2 h-2 bg-zinc-800">
+          <div className="h-full bg-gradient-to-r from-amber-400 via-rose-400 to-violet-400" style={{ width: `${passProgress}%` }} />
+        </div>
+      </Panel>
+      <Panel title="일일 임무" icon={<Target size={17} />}>
+        <div className="grid gap-2 md:grid-cols-3">
+          {(dailyTasks ?? []).map((task) => (
+            <button
+              key={task.id}
+              onClick={() => claimDailyTask(task.id)}
+              disabled={!task.completed || task.claimed}
+              className="border border-zinc-800 bg-zinc-900/55 p-2 text-left text-xs hover:border-emerald-500/70 disabled:opacity-60"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium text-zinc-100">{task.title}</p>
+                <span className={task.completed ? "text-emerald-200" : "text-zinc-500"}>{task.progress}/{task.target}</span>
+              </div>
+              <p className="mt-1 text-zinc-400">{task.claimed ? "보상 수령 완료" : task.goal}</p>
+            </button>
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function TownMetaPanels() {
+  const idleReward = useGameStore((state) => state.idleReward);
+  const character = useGameStore((state) => state.character);
+  const claimIdleReward = useGameStore((state) => state.claimIdleReward);
+  const towerRanking = useGameStore((state) => state.towerRanking);
+  const npcAffinity = useGameStore((state) => state.npcAffinity);
+  const pending = character ? idleReward : undefined;
+  return (
+    <div className="grid gap-2 xl:grid-cols-3">
+      <Panel title="현실 목걸이 축적" icon={<Clock3 size={17} />}>
+        <div className="grid gap-2 text-sm text-zinc-300">
+          <p>{pending ? `${pending.cappedHours.toFixed(1)}시간 축적 · ${pending.pendingGold}G · 철광석 ${pending.pendingMaterials}` : "축적 없음"}</p>
+          <button onClick={claimIdleReward} className="h-9 border border-violet-600/70 bg-violet-950/30 text-sm text-violet-100 hover:bg-violet-900/40">방치 보상 수령</button>
+        </div>
+      </Panel>
+      <Panel title="시즌 랭킹" icon={<Trophy size={17} />}>
+        <div className="grid grid-cols-3 gap-2 text-center text-xs">
+          <Power label="최고층" value={towerRanking?.highestFloor ?? 0} />
+          <Power label="최단턴" value={towerRanking?.bestTurns ?? 0} />
+          <Power label="노데스" value={towerRanking?.noDeathFloor ?? 0} />
+        </div>
+      </Panel>
+      <Panel title="NPC 호감도" icon={<HandHeart size={17} />}>
+        <div className="grid grid-cols-2 gap-1 text-xs text-zinc-300">
+          {Object.entries(npcAffinity ?? {}).map(([key, value]) => (
+            <div key={key} className="flex justify-between border border-zinc-800 bg-zinc-900/45 px-2 py-1">
+              <span>{npcLabel(key)}</span>
+              <span className="text-amber-200">{value}</span>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function AdvancedProgressPanels() {
+  const seasonAlbum = useGameStore((state) => state.seasonAlbum);
+  const claimSeasonAlbumReward = useGameStore((state) => state.claimSeasonAlbumReward);
+  const achievementDetails = useGameStore((state) => state.achievementDetails);
+  const character = useGameStore((state) => state.character);
+  const expedition = useGameStore((state) => state.expedition);
+  const npcMemory = useGameStore((state) => state.npcMemory);
+  const adaptive = useGameStore((state) => state.adaptive);
+  const liveOps = useGameStore((state) => state.liveOps);
+  const albumDone = seasonAlbum?.entries.every((entry) => entry.collected);
+  return (
+    <div className="grid gap-2 xl:grid-cols-3">
+      <Panel title="시즌 컬렉션 앨범" icon={<BookOpen size={17} />}>
+        <div className="grid gap-2">
+          <div className="grid max-h-[180px] gap-1 overflow-auto pr-1 text-xs">
+            {(seasonAlbum?.entries ?? []).map((entry) => (
+              <div key={entry.id} className={`border px-2 py-1 ${entry.collected ? "border-emerald-600/60 bg-emerald-950/20 text-emerald-100" : "border-zinc-800 bg-zinc-900/45 text-zinc-400"}`}>
+                {entry.collected ? "완료" : "미발견"} · {entry.category} · {entry.name}
+                <p className="text-zinc-500">{entry.hint}</p>
+              </div>
+            ))}
+          </div>
+          <button onClick={claimSeasonAlbumReward} disabled={!albumDone || seasonAlbum?.claimed} className="h-9 border border-amber-700/60 text-sm text-amber-100 hover:bg-amber-950/40 disabled:opacity-40">
+            {seasonAlbum?.claimed ? "앨범 보상 수령 완료" : "앨범 완성 보상"}
+          </button>
+        </div>
+      </Panel>
+      <Panel title="업적/칭호 상세" icon={<Trophy size={17} />}>
+        <div className="grid max-h-[220px] gap-2 overflow-auto pr-1">
+          {(achievementDetails ?? []).map((achievement) => (
+            <div key={achievement.id} className={`border p-2 text-xs ${achievement.unlocked ? "border-amber-600/60 bg-amber-950/20 text-amber-100" : "border-zinc-800 bg-zinc-900/45 text-zinc-400"}`}>
+              <p className="font-medium">{achievement.title}</p>
+              <p>{achievement.condition}</p>
+              <p className="text-zinc-500">힌트: {achievement.hint}</p>
+              <p className="text-sky-200/80">효과: {achievement.effect}</p>
+            </div>
+          ))}
+        </div>
+      </Panel>
+      <Panel title="동료/룬/원정" icon={<Gem size={17} />}>
+        <div className="grid gap-2 text-xs text-zinc-300">
+          <p>동료 {(character?.companions ?? []).length}/5 · 룬 {(character?.runes ?? []).length}/5</p>
+          {(character?.companions ?? []).slice(0, 2).map((companion) => (
+            <p key={companion.id} className="border border-zinc-800 bg-zinc-900/45 px-2 py-1">{companion.kind} {companion.name} Lv.{companion.level}</p>
+          ))}
+          {(character?.runes ?? []).slice(0, 2).map((rune) => (
+            <p key={rune.id} className="border border-violet-800/60 bg-violet-950/20 px-2 py-1">{rune.name}</p>
+          ))}
+          <p className="text-zinc-500">원정: {expedition?.startedAt ? `${expedition.assignedItemName} 파견 중` : "대기 중"}</p>
+        </div>
+      </Panel>
+      <Panel title="AI NPC 기억" icon={<HandHeart size={17} />}>
+        <div className="grid max-h-[160px] gap-1 overflow-auto pr-1 text-xs text-zinc-400">
+          {Object.entries(npcMemory ?? {}).flatMap(([npc, memories]) => (memories as string[]).map((memory, index) => (
+            <p key={`${npc}-${index}`} className="border-l border-sky-600 bg-sky-950/15 px-2 py-1">{npcLabel(npc)}: {memory}</p>
+          )))}
+        </div>
+      </Panel>
+      <Panel title="난이도 적응" icon={<Flame size={17} />}>
+        <div className="grid gap-1 text-xs text-zinc-300">
+          <p>연승 {adaptive?.winStreak ?? 0} · 연패 {adaptive?.lossStreak ?? 0}</p>
+          <p className="text-amber-200">{adaptive?.bonusObjective ?? "현재 추가 목표 없음"}</p>
+        </div>
+      </Panel>
+      <Panel title="운영 이벤트 JSON" icon={<ScrollText size={17} />}>
+        <div className="grid gap-1 text-xs text-zinc-300">
+          <p>{liveOps?.eventName}</p>
+          <p>보상 배율 x{liveOps?.rewardMultiplier ?? 1}</p>
+          <p>앨범 보너스 {liveOps?.albumBonusGold ?? 0}G</p>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function BuildSynergyPanel() {
+  const character = useGameStore((state) => state.character);
+  if (!character) return null;
+  const synergies = calculateBuildSynergies(character);
+  return (
+    <Panel title="빌드 시너지" icon={<Sparkles size={17} />}>
+      <div className="grid gap-2">
+        {synergies.length === 0 && <p className="text-sm leading-6 text-zinc-500">직업, 특성, 장비 세트, 숙련 레벨이 맞물리면 시너지가 열린다.</p>}
+        {synergies.map((synergy) => (
+          <div key={synergy.id} className="border border-amber-700/50 bg-amber-950/20 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-medium text-amber-100">{synergy.name}</p>
+              <span className="text-xs text-amber-200">Tier {synergy.tier}</span>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-zinc-300">{synergy.text}</p>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function EncounterCodexPanel() {
+  const codex = useGameStore((state) => state.encounterCodex);
+  const entries = codex ?? [];
+  const discovered = entries.filter((entry) => entry.discovered).length;
+  return (
+    <Panel title={`기연 도감 ${discovered}/${entries.length}`} icon={<BookOpen size={17} />}>
+      <div className="grid max-h-[220px] gap-2 overflow-auto pr-1">
+        {entries.map((entry) => (
+          <div key={entry.id} className={`border p-2 ${entry.discovered ? "border-violet-500/60 bg-violet-950/20" : "border-zinc-800 bg-zinc-900/40"}`}>
+            <p className={entry.discovered ? "font-medium text-violet-100" : "font-medium text-zinc-500"}>{entry.discovered ? entry.name : "미발견 기연"}</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-400">{entry.discovered ? entry.text : "던전과 탑, 일일 균열에서 특수한 사건을 만나면 기록된다."}</p>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function RelicPanel() {
+  const relics = useGameStore((state) => state.character?.relics ?? []);
+  return (
+    <Panel title={`유물 ${relics.length}/12`} icon={<Gem size={17} />}>
+      <div className="grid max-h-[190px] gap-2 overflow-auto pr-1">
+        {relics.length === 0 && <p className="text-sm leading-6 text-zinc-500">보스, 무한탑, 일일 균열에서 낮은 확률로 유물을 얻는다.</p>}
+        {relics.map((relic) => (
+          <div key={relic.id} className={`relic-card border p-2 ${rarityColor[relic.rarity]}`}>
+            <p className="font-medium">{relic.name}</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-400">{relic.text}</p>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function BuildGuidePanel() {
+  const character = useGameStore((state) => state.character);
+  if (!character) return null;
+  const synergies = calculateBuildSynergies(character);
+  const tips = [
+    synergies.length < 2 ? "치명타 옵션 장비 2개 이상 또는 세트 장비를 모으면 초반 시너지가 열린다." : "현재 빌드는 시너지 기반 보너스를 받고 있다.",
+    (character.specialSkills ?? []).length === 0 ? "이벤트방과 일일 균열을 자주 돌아 기연 스킬을 먼저 확보하자." : "기연 스킬은 보스전에서 MP를 남겨두고 쓰면 효율이 좋다.",
+    (character.relics ?? []).length < 2 ? "일일 균열은 유물 획득률이 높아 매일 한 번 우선 도전할 가치가 있다." : "유물 효과가 누적되어 장기 성장 곡선이 좋아졌다.",
+  ];
+  return (
+    <Panel title="빌드 추천" icon={<Flame size={17} />}>
+      <div className="grid gap-2">
+        {tips.map((tip) => (
+          <p key={tip} className="border-l border-sky-500 bg-sky-950/15 px-3 py-2 text-xs leading-5 text-sky-100">{tip}</p>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function CollectionPanel() {
+  const character = useGameStore((state) => state.character);
+  const codex = useGameStore((state) => state.encounterCodex);
+  if (!character) return null;
+  const hiddenJobKnown = character.job.hidden ? 1 : 0;
+  const discovered = (codex ?? []).filter((entry) => entry.discovered).length;
+  const total = (codex?.length ?? 0) + 4;
+  const owned = discovered + hiddenJobKnown + (character.titles?.length ?? 0) + (character.cosmetics?.length ?? 0);
+  return (
+    <Panel title={`수집률 ${owned}/${total}`} icon={<BookOpen size={17} />}>
+      <div className="grid gap-1 text-xs text-zinc-300">
+        <p>기연 {discovered}/{codex?.length ?? 0}</p>
+        <p>숨겨진 직업 {hiddenJobKnown}/1</p>
+        <p>칭호 {character.titles?.length ?? 0} · 코스메틱 {character.cosmetics?.length ?? 0}</p>
+      </div>
+    </Panel>
+  );
+}
+
+function MonetizationPanel() {
+  return (
+    <Panel title="공정 BM 방향" icon={<Sparkles size={17} />}>
+      <div className="grid gap-1 text-xs leading-5 text-zinc-400">
+        <p>성장은 플레이로 획득: 직업, 장비, 유물, 기연은 게임 내 보상 중심.</p>
+        <p>유료화 후보: 코스메틱, 편의성, 시즌 패스 보너스 트랙.</p>
+      </div>
+    </Panel>
   );
 }
 
@@ -395,6 +736,8 @@ function CombatView() {
 
 function RewardView() {
   const enterDungeon = useGameStore((state) => state.enterDungeon);
+  const rewardChoice = useGameStore((state) => state.rewardChoice);
+  const claimRewardChoice = useGameStore((state) => state.claimRewardChoice);
   const phaseTown = () => useGameStore.setState({ phase: "town" });
   return (
     <div className="grid h-full place-items-center text-center">
@@ -402,6 +745,17 @@ function RewardView() {
         <Sparkles className="mx-auto text-amber-200" size={42} />
         <h2 className="mt-4 text-3xl font-bold">던전 클리어</h2>
         <p className="mt-3 leading-7 text-zinc-300">목걸이가 던전의 핵을 흡수했다. 더 깊은 던전과 높은 희귀도 보상이 열릴 준비를 한다.</p>
+        {rewardChoice && (
+          <div className="mt-5 grid gap-2 text-left">
+            <p className="text-center text-sm text-amber-200">{rewardChoice.source} 선택 보상</p>
+            {rewardChoice.choices.map((choice) => (
+              <button key={choice.id} onClick={() => claimRewardChoice(choice.id)} className="border border-amber-700/50 bg-amber-950/20 p-3 text-left hover:bg-amber-900/30">
+                <p className="font-semibold text-amber-100">{choice.title}</p>
+                <p className="mt-1 text-sm text-zinc-300">{choice.text}</p>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="mt-6 grid grid-cols-2 gap-2">
           <Action onClick={enterDungeon} icon={<Castle size={18} />} label="다시 입장" />
           <Action onClick={phaseTown} icon={<Package size={18} />} label="마을로" />
@@ -426,13 +780,14 @@ function DefeatView() {
 
 function ChoiceBar({ skills }: { skills: Skill[] }) {
   const store = useGameStore();
+  const character = store.character;
   const room = store.dungeon[store.roomIndex];
   if (store.phase === "combat") {
     return (
       <div className="grid grid-cols-2 gap-2 border-t border-zinc-800 bg-zinc-950/80 p-3 md:grid-cols-4 xl:grid-cols-8">
         <Action onClick={() => store.combatAction("attack")} icon={<Swords size={18} />} label="공격" />
         {skills.map((skill) => (
-          <Action key={skill.id} onClick={() => store.combatAction("skill", skill.id)} icon={<WandSparkles size={18} />} label={`${skill.name}(${skill.mpCost})`} />
+          <Action key={skill.id} onClick={() => store.combatAction("skill", skill.id)} icon={<WandSparkles size={18} />} label={`${skill.name}(${character ? skillMpCost(character, skill.mpCost) : skill.mpCost})`} />
         ))}
         <Action onClick={() => store.combatAction("defend")} icon={<Shield size={18} />} label="방어" />
         <Action onClick={() => store.combatAction("dodge")} icon={<Dices size={18} />} label="회피" />
@@ -612,16 +967,27 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
+function npcLabel(key: string) {
+  const labels: Record<string, string> = {
+    church: "교회",
+    inn: "여관",
+    guild: "길드",
+    blacksmith: "대장장이",
+    merchant: "상인",
+  };
+  return labels[key] ?? key;
+}
+
 function Action({ onClick, icon, label, disabled }: { onClick: () => void; icon: React.ReactNode; label: string; disabled?: boolean }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       title={label}
-      className="flex h-11 min-w-0 items-center justify-center gap-2 border border-zinc-700 bg-zinc-900/70 px-3 text-sm font-medium text-zinc-100 hover:border-amber-500/70 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+      className="flex min-h-11 min-w-0 items-center justify-center gap-2 border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-sm font-medium text-zinc-100 hover:border-amber-500/70 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
     >
-      {icon}
-      <span className="truncate">{label}</span>
+      <span className="shrink-0">{icon}</span>
+      <span className="min-w-0 text-center leading-tight">{label}</span>
     </button>
   );
 }
@@ -733,6 +1099,7 @@ function ItemStorageConfirm({
 function EnhanceModal({ onClose }: { onClose: () => void }) {
   const character = useGameStore((state) => state.character);
   const enhanceEquipment = useGameStore((state) => state.enhanceEquipment);
+  const reforgeEquipment = useGameStore((state) => state.reforgeEquipment);
   const slots: EquipmentSlot[] = ["무기", "갑옷", "신발", "장갑", "귀걸이", "반지", "망토", "투구"];
 
   return (
@@ -752,11 +1119,9 @@ function EnhanceModal({ onClose }: { onClose: () => void }) {
             const chance = equipment ? (equipment.enhance < 10 ? 100 : Math.max(28, Math.round((0.86 - (equipment.enhance - 9) * 0.07) * 100))) : 0;
             const disabled = !equipment || equipment.enhance >= 20 || !character || character.gold < cost;
             return (
-              <button
+              <div
                 key={slot}
-                disabled={disabled}
-                onClick={() => enhanceEquipment(slot)}
-                className="min-h-24 border border-zinc-800 bg-zinc-900/55 p-3 text-left hover:border-amber-500/70 disabled:cursor-not-allowed disabled:opacity-45"
+                className="min-h-24 border border-zinc-800 bg-zinc-900/55 p-3 text-left"
               >
                 <div className="flex items-center justify-between gap-2">
                   <p className="font-semibold">{slot}</p>
@@ -770,7 +1135,11 @@ function EnhanceModal({ onClose }: { onClose: () => void }) {
                 ) : (
                   <p className="mt-2 text-sm text-zinc-500">장착된 장비 없음</p>
                 )}
-              </button>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button disabled={disabled} onClick={() => enhanceEquipment(slot)} className="h-8 border border-amber-700/60 text-xs text-amber-100 hover:bg-amber-950/40 disabled:opacity-40">강화</button>
+                  <button disabled={!equipment} onClick={() => reforgeEquipment(slot)} className="h-8 border border-violet-700/60 text-xs text-violet-100 hover:bg-violet-950/40 disabled:opacity-40">옵션 재련</button>
+                </div>
+              </div>
             );
           })}
         </div>

@@ -167,6 +167,183 @@ export type Achievement = {
   unlocked: boolean;
 };
 
+export type BuildSynergy = {
+  id: string;
+  name: string;
+  text: string;
+  tier: "I" | "II" | "III";
+  effects: Partial<{
+    attackRate: number;
+    magicRate: number;
+    defenseRate: number;
+    critRate: number;
+    dropRate: number;
+    expRate: number;
+    goldRate: number;
+    mpCostRate: number;
+  }>;
+};
+
+export type EncounterCodexEntry = {
+  id: string;
+  name: string;
+  text: string;
+  discovered: boolean;
+};
+
+export type DailyRiftState = {
+  date: string;
+  completed: boolean;
+  tier: number;
+  seed: number;
+};
+
+export type Relic = {
+  id: string;
+  name: string;
+  rarity: Rarity;
+  text: string;
+  effects: Partial<{
+    attackRate: number;
+    magicRate: number;
+    defenseRate: number;
+    critRate: number;
+    dropRate: number;
+    expRate: number;
+    goldRate: number;
+  }>;
+};
+
+export type SeasonPassState = {
+  seasonKey: string;
+  name: string;
+  startsAt: string;
+  endsAt: string;
+  xp: number;
+  claimedLevels: number[];
+};
+
+export type TowerRanking = {
+  highestFloor: number;
+  bestTurns: number;
+  noDeathFloor: number;
+};
+
+export type WeeklyBossState = {
+  weekKey: string;
+  completed: boolean;
+  name: string;
+  tier: number;
+};
+
+export type IdleRewardState = {
+  lastSeenAt: string;
+  pendingGold: number;
+  pendingMaterials: number;
+  pendingTowerKeys: number;
+  cappedHours: number;
+};
+
+export type RewardChoice = {
+  id: "equipment-box" | "skill-fragment" | "enhance-stone";
+  title: string;
+  text: string;
+};
+
+export type RewardChoiceState = {
+  source: string;
+  choices: RewardChoice[];
+};
+
+export type NpcAffinity = Record<"church" | "inn" | "guild" | "blacksmith" | "merchant", number>;
+
+export type SeasonAlbumEntry = {
+  id: string;
+  category: "기연" | "보스" | "장비" | "유물";
+  name: string;
+  hint: string;
+  collected: boolean;
+};
+
+export type SeasonAlbumState = {
+  seasonKey: string;
+  entries: SeasonAlbumEntry[];
+  claimed: boolean;
+};
+
+export type AchievementDetail = {
+  id: string;
+  title: string;
+  condition: string;
+  hint: string;
+  effect: string;
+  unlocked: boolean;
+};
+
+export type Companion = {
+  id: string;
+  name: string;
+  kind: "동료" | "정령" | "펫";
+  level: number;
+  exp: number;
+  text: string;
+  effects: Partial<{
+    assistDamageRate: number;
+    dropRate: number;
+    encounterRate: number;
+    goldRate: number;
+  }>;
+};
+
+export type Rune = {
+  id: string;
+  name: string;
+  element: FateAnalysis["element"];
+  text: string;
+  effects: Partial<{
+    attackRate: number;
+    magicRate: number;
+    defenseRate: number;
+    critRate: number;
+    mpCostRate: number;
+  }>;
+};
+
+export type ExpeditionState = {
+  startedAt?: string;
+  endsAt?: string;
+  assignedItemName?: string;
+  claimed: boolean;
+};
+
+export type LiveOpsConfig = {
+  eventName: string;
+  rewardMultiplier: number;
+  albumBonusGold: number;
+  updatedAt: string;
+};
+
+export type NpcMemory = Record<keyof NpcAffinity, string[]>;
+
+export type AdaptiveState = {
+  winStreak: number;
+  lossStreak: number;
+  bonusObjective?: string;
+};
+
+export type DailyTask = {
+  id: string;
+  date: string;
+  title: string;
+  goal: string;
+  progress: number;
+  target: number;
+  rewardGold: number;
+  rewardSeasonXp: number;
+  completed: boolean;
+  claimed: boolean;
+};
+
 export type Character = {
   id: string;
   profile: BirthProfile;
@@ -186,14 +363,26 @@ export type Character = {
   traits: Trait[];
   blessings: Blessing[];
   specialSkills: Skill[];
+  relics: Relic[];
+  titles: string[];
+  cosmetics: string[];
+  activeTitle?: string;
+  activeCosmetic?: string;
+  companions: Companion[];
+  runes: Rune[];
   skillPoints: number;
   equipment: Partial<Record<EquipmentSlot, Equipment>>;
 };
 
 export type DungeonRunInfo = {
-  type: "beginner" | "tower";
+  type: "beginner" | "tower" | "rift" | "weekly";
   floor: number;
   rewardMultiplier: number;
+  seasonName?: string;
+  seasonMod?: string;
+  comboStreak?: number;
+  turns?: number;
+  deaths?: number;
 };
 
 export type CombatState = {
